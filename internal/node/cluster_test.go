@@ -31,6 +31,7 @@ type cluster struct {
 	t         *testing.T
 	slots     []*slot
 	configure func(*Config)
+	seed      string
 }
 
 func fastConfig(s *slot, listen string, peers []string) Config {
@@ -56,7 +57,7 @@ func newCluster(t *testing.T, size int) *cluster {
 	return newClusterWith(t, size, func(*Config) {})
 }
 
-func newClusterWith(t *testing.T, size int, configure func(*Config)) *cluster {
+func emptyCluster(t *testing.T, size int, configure func(*Config)) *cluster {
 	t.Helper()
 	c := &cluster{t: t, configure: configure}
 	for i := 0; i < size; i++ {
@@ -67,6 +68,12 @@ func newClusterWith(t *testing.T, size int, configure func(*Config)) *cluster {
 			c.stop(i)
 		}
 	})
+	return c
+}
+
+func newClusterWith(t *testing.T, size int, configure func(*Config)) *cluster {
+	t.Helper()
+	c := emptyCluster(t, size, configure)
 	for _, s := range c.slots {
 		cfg := fastConfig(s, "127.0.0.1:0", nil)
 		configure(&cfg)
@@ -113,6 +120,10 @@ func (c *cluster) start(i int) {
 		return
 	}
 	cfg := fastConfig(s, s.addr, c.peersOf(i))
+	if c.seed != "" {
+		cfg.Peers = nil
+		cfg.Seed = c.seed
+	}
 	c.configure(&cfg)
 	n, err := Start(cfg)
 	if err != nil {

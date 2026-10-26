@@ -148,7 +148,7 @@ func (c *Client) getJSON(addr, path string, query url.Values, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *Client) PostJSON(addr, path string, body any) error {
+func (c *Client) PostJSON(addr, path string, body, reply any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -157,8 +157,11 @@ func (c *Client) PostJSON(addr, path string, body any) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
-	return nil
+	defer resp.Body.Close()
+	if reply == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(reply)
 }
 
 func (c *Client) get(addr, path string, query url.Values) (*http.Response, error) {

@@ -52,12 +52,13 @@ func run(cfg config) error {
 	nodeCfg.Listen = cfg.listen
 	nodeCfg.Advertise = cfg.advertise
 	nodeCfg.Peers = cfg.peers
+	nodeCfg.Seed = cfg.seed
 
 	n, err := node.Start(nodeCfg)
 	if err != nil {
 		return err
 	}
-	log.Printf("node %s listening on %s, advertised as %s, peers %v", n.ID, cfg.listen, n.Addr, cfg.peers)
+	log.Printf("node %s listening on %s, advertised as %s, peers %v, seed %q", n.ID, cfg.listen, n.Addr, cfg.peers, cfg.seed)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

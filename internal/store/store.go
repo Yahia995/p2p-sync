@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS blocks (
 	PRIMARY KEY (path, idx)
 );
 CREATE INDEX IF NOT EXISTS blocks_by_hash ON blocks(hash);
+CREATE TABLE IF NOT EXISTS members (
+	addr TEXT PRIMARY KEY,
+	id   TEXT NOT NULL
+);
 `
 
 type Record struct {
@@ -42,6 +46,11 @@ type Record struct {
 	Hash    string    `json:"hash"`
 	Size    int64     `json:"size"`
 	MTime   int64     `json:"-"`
+}
+
+type Peer struct {
+	Addr string
+	ID   string
 }
 
 type Store struct {
@@ -173,6 +182,29 @@ func (s *Store) FindBlock(hash string) (path string, offset int64, size int64, f
 		return "", 0, 0, false, err
 	}
 	return path, idx * chunk.Size, size, true, nil
+}
+
+func (s *Store) SavePeer(p Peer) error {
+	_, err := s.db.Exec(`INSERT INTO members (addr, id) VALUES (?, ?)
+		ON CONFLICT (addr) DO UPDATE SET id = excluded.id`, p.Addr, p.ID)
+	return err
+}
+
+func (s *Store) Peers() ([]Peer, error) {
+	rows, err := s.db.Query("SELECT addr, id FROM members ORDER BY addr")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var peers []Peer
+	for rows.Next() {
+		var p Peer
+		if err := rows.Scan(&p.Addr, &p.ID); err != nil {
+			return nil, err
+		}
+		peers = append(peers, p)
+	}
+	return peers, rows.Err()
 }
 
 type rowScanner interface {

@@ -129,10 +129,8 @@ CREATE TABLE blocks (
 CREATE INDEX blocks_by_hash ON blocks(hash);
 
 CREATE TABLE members (
-    id          TEXT PRIMARY KEY,
-    addr        TEXT NOT NULL,
-    incarnation INTEGER NOT NULL,
-    state       TEXT NOT NULL
+    addr TEXT PRIMARY KEY,
+    id   TEXT NOT NULL
 );
 ```
 
@@ -142,7 +140,7 @@ CREATE TABLE members (
 | `files.version` | Canonical JSON of the version vector |
 | `files.mtime` | Local only, used by the scanner |
 | `blocks` | Chunk list of the current version of each file. `blocks_by_hash` lets the node serve a chunk by hash and reuse local chunks when building a new file. A chunk's byte offset is `idx * 128 KiB` because all chunks except the last have the same size |
-| `members` | Last known membership, so a restarted node can rejoin without the seed. Created in Phase 10, when it is first used |
+| `members` | Every member this node has learned about (address, and node ID once known), so a restarted node can rejoin without the seed. Keyed by address like the rest of membership (section 5). State is not stored: after a restart every member starts `dead` until heard again. Incarnation is added in Phase 11 with SWIM |
 
 ## 5. Messages (HTTP + JSON)
 
@@ -160,8 +158,8 @@ appear in `/status`.
 | GET | `/merkle?node=X` | — | `{"node":X,"hash":..,"children":[16 hashes]}` for `X` = `""` or one hex digit, `{"node":X,"hash":..,"records":[]Record}` for two hex digits | Merkle anti-entropy |
 | POST | `/push` | `{"from":addr,"records":[]Record}` (no blocks) | 204 after applying | Push on change |
 | POST | `/heartbeat` | `{"from":id,"addr":..}` | 204 | All-to-all heartbeats |
-| POST | `/join` | `Member` | `[]Member` | Seed + gossip |
-| POST | `/gossip` | `[]Member` | `[]Member` | Seed + gossip |
+| POST | `/join` | `Member` (the joiner) | `[]Member` (the seed's view, itself first) | Seed + gossip |
+| POST | `/gossip` | `[]Member` (sender's view, itself first) | `[]Member` (receiver's view) | Seed + gossip |
 | POST | `/ping` | `{"from":id,"updates":[]Member}` | `{"updates":[]Member}` | SWIM |
 | POST | `/ping-req` | `{"from":id,"target":id,"updates":[]Member}` | `{"ok":bool,"updates":[]Member}` | SWIM |
 | GET | `/status` | — | node state as JSON | Dashboard, CLI, tests (added in Phase 7) |
@@ -185,11 +183,14 @@ Example record:
 }
 ```
 
-Member:
+Member (Phase 10; SWIM adds `incarnation` in Phase 11):
 
 ```json
-{"id": "3f9a...", "addr": "192.168.1.20:7001", "incarnation": 3, "state": "alive"}
+{"addr": "192.168.1.20:7001", "id": "3f9a...", "state": "alive"}
 ```
+
+In `/status` a member also has `last_heard` once it has been heard. The receiver of `/join` or
+`/gossip` only uses `addr` and `id`; the sender's `state` is informational.
 
 `--advertise` sets the address a node announces. It is needed because the listen address
 (`0.0.0.0:7001`) is not reachable by others.
@@ -394,6 +395,10 @@ waiting for an answer. The receiver runs `Syncer.ApplyRecords(sender, records)`,
 as anti-entropy, so conflicts and tombstones behave identically. It fetches blocks from the sender
 and answers 204 when done. Applying before answering means `Node.Stop` (which uses
 `http.Server.Shutdown`) waits for pushes in progress instead of closing the store under them.
+The wait is capped at 1 s. A longer cap does not help: Go's server only closes a connection that
+never sent a request once it is 5 s old, and the HTTP client sometimes opens such a spare
+connection, so a 5 s cap made `Stop` take 5 s about half the time. A push cut off at stop is the
+same as a crash during apply, which 7.2 already handles.
 
 Only local edits are pushed. A received record never passes through `OnChange`, because the
 scanner does not treat received files as edits (echo suppression, section 6). So there is no
@@ -493,12 +498,16 @@ Member states: `alive`, `suspect`, `dead`. Sync and push only target `alive` mem
 
 ```
 every 1 s: send POST /heartbeat to every known member (also dead ones, so they can come back)
-on heartbeat from p: lastHeard[p] = now; state[p] = alive   (unknown senders are added)
+on heartbeat from p: if p is known: lastHeard[p] = now; state[p] = alive
 every 1 s: for p:
     if now - lastHeard[p] < 3 s:  state[p] = alive
     else if < 10 s:               state[p] = suspect
     else:                         state[p] = dead
 ```
+
+Heartbeats only refresh members that are already known. Since Phase 10 the member list only grows
+through `-peers`, `/join` and `/gossip` (9.2). Before Phase 10, unknown senders were added; that was
+removed so the discovery test really depends on gossip (with gossip disabled it fails).
 
 A peer that has never been heard from starts as `dead`. Only incoming heartbeats count as hearing
 a peer, not successful outgoing ones. With a one-way cut (A can reach B but B cannot reach A), B
@@ -509,17 +518,44 @@ Message cost: O(n²) per second. Fine for under 10 nodes, and the reason to move
 
 ### 9.2 Seed + gossip discovery
 
+Gossip spreads who exists. It does not decide who is alive: until SWIM (Phase 11), liveness comes
+only from direct heartbeats (9.1).
+
 ```
-start: POST /join to the seed address -> member list
-every 1 s: pick 2 random alive members, POST /gossip with the local list, merge the answer
-merge(m):
-    if m.id unknown: add
-    else if m.incarnation > local.incarnation: replace
-    else if equal incarnation and m.state is worse (alive < suspect < dead): take m.state
+each heartbeat period (1 s), before heartbeats:
+    if the member list is empty and a seed is set: POST /join {addr, id} to the seed, learn the answer
+after heartbeats:
+    pick 2 random alive members, POST /gossip with my view, learn the answer
+on /join from m:  learn([m]),  answer with my view
+on /gossip(list): learn(list), answer with my view
+view = [me (alive)] + every member I know
+learn(list):
+    for m in list, skipping my own address:
+        if m.addr unknown:            add {addr, id} as dead, save to the members table
+        else if my entry has no id:   take m.id, save
+        else:                         ignore (the rumor never changes local state)
 ```
 
-Only the node itself increases its own incarnation. That number lets a node refute a false
-"suspect" rumor about itself.
+- **Unknown members start `dead`**, like static peers. A rumor that a node exists is not evidence
+  that it is reachable from here. It becomes `alive` when its first heartbeat arrives (within one
+  period, because it learns about us through the same gossip).
+- **An exchange works both ways.** The answer to `/gossip` is the receiver's view, so both sides
+  learn in one request. Including yourself first in the view is how others learn about you.
+- **Fanout 2, every second.** Information reaches all n nodes in about log(n) rounds. Measured on
+  localhost: two nodes started with only `-seed` see the seed and each other alive in about 1 s.
+- **The seed is only a first contact.** A node joins only while its member list is empty, and
+  retries every period while the seed is down. After that the seed is an ordinary member.
+- **Rejoin without the seed.** Members are saved in the `members` table. A restarted node loads them
+  as `dead` and sends heartbeats to all of them (9.1 sends to dead members too). The peers still
+  know it, so they mark it alive and answer, and it is back in about one period, even with the seed
+  down (tested, and checked by hand with real processes).
+- **Node IDs.** Gossip only fills in a missing ID. A heartbeat is direct evidence, so the ID in a
+  heartbeat always wins.
+
+No incarnation yet. With heartbeats deciding liveness, a gossiped state would be overwritten by
+the local timers every second, so merging states by incarnation would be code with no effect.
+Incarnations, and the rule "higher incarnation wins, same incarnation worse state wins", come with
+SWIM in Phase 11, when rumors about liveness actually matter.
 
 ### 9.3 SWIM (replaces 9.1)
 

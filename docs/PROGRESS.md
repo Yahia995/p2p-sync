@@ -73,11 +73,17 @@
 - [x] Manual check: change reaches the other node in about 720 ms with default timers
 
 ## Phase 10 — Seed + gossip
-- [ ] /join, /gossip, incarnation merge, members persisted
-- [ ] Five-node discovery test passes
+- [x] /join, /gossip, members persisted in SQLite, -seed flag
+- [x] Heartbeats no longer add unknown senders (membership grows only by -peers, join, gossip)
+- [x] Incarnation moved to Phase 11 (decision in Phase 10)
+- [x] Five-node discovery test and rejoin-without-seed test pass
+- [x] Mutation check: with gossip disabled, the discovery test fails
+- [x] Node.Stop grace period cut from 5 s to 1 s (Stop often waited the full 5 s)
+- [x] Manual check: discovery in about 1 s, restarted node rejoins in about 1 s with the seed down
 
 ## Phase 11 — SWIM
 - [ ] ping, ping-req, suspicion, refutation, piggyback dissemination
+- [ ] Incarnation in members and messages, incarnation merge rule
 - [ ] Indirect ping and refutation tests pass
 
 ## Phase 12 — Dashboard

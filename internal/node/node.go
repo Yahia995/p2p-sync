@@ -25,6 +25,7 @@ type Config struct {
 	Listen    string
 	Advertise string
 	Peers     []string
+	Seed      string
 	Faults    *transport.Faults
 	Logger    *log.Logger
 
@@ -120,10 +121,20 @@ func Start(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	heartbeatClient := transport.NewClient(n.Addr, cfg.HeartbeatEvery, n.Faults)
-	n.Members = membership.New(id, n.Addr, cfg.Peers, heartbeatClient, cfg.SuspectAfter, cfg.DeadAfter)
+	n.Members, err = membership.New(id, n.Addr, cfg.Seed, st, heartbeatClient, cfg.SuspectAfter, cfg.DeadAfter)
+	if err != nil {
+		listener.Close()
+		st.Close()
+		return nil, err
+	}
+	for _, addr := range cfg.Peers {
+		n.Members.AddPeer(addr)
+	}
 
 	mux := transport.NewHandler(st, cfg.Dir)
 	mux.HandleFunc("POST /heartbeat", n.Members.HandleHeartbeat)
+	mux.HandleFunc("POST /join", n.Members.HandleJoin)
+	mux.HandleFunc("POST /gossip", n.Members.HandleGossip)
 	mux.HandleFunc("POST /push", n.handlePush)
 	mux.HandleFunc("POST /admin/faults", n.Faults.HandleAdmin)
 	mux.HandleFunc("GET /status", n.handleStatus)
@@ -183,7 +194,7 @@ func (n *Node) push(paths []string) {
 	}
 	for _, addr := range n.Members.Alive() {
 		go func() {
-			if err := n.Syncer.Client.PostJSON(addr, "/push", msg); err != nil {
+			if err := n.Syncer.Client.PostJSON(addr, "/push", msg, nil); err != nil {
 				n.log.Println("push:", err)
 			}
 		}()
@@ -221,7 +232,7 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (n *Node) Stop() {
 	n.cancel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := n.server.Shutdown(ctx); err != nil {
 		n.server.Close()

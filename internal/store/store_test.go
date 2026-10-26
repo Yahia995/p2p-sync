@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"p2psync/internal/chunk"
@@ -154,5 +155,29 @@ func TestSetVersion(t *testing.T) {
 	}
 	if blocks, _ := s.Blocks("a"); len(blocks) != 1 {
 		t.Errorf("SetVersion dropped blocks: %v", blocks)
+	}
+}
+
+func TestPeersPersist(t *testing.T) {
+	s, path := openTemp(t)
+	for _, p := range []Peer{{Addr: "b:1"}, {Addr: "a:1", ID: "id-a"}, {Addr: "b:1", ID: "id-b"}} {
+		if err := s.SavePeer(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	peers, err := reopened.Peers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Peer{{Addr: "a:1", ID: "id-a"}, {Addr: "b:1", ID: "id-b"}}
+	if !slices.Equal(peers, want) {
+		t.Errorf("Peers = %v, want %v", peers, want)
 	}
 }

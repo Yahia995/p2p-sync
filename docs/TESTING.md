@@ -16,11 +16,11 @@ CONVERGENCE_FIRST_SEED=2 CONVERGENCE_SEEDS=1 go test ./internal/node -run Conver
 |---|---|
 | `internal/vv` | Compare (4 outcomes, missing keys), Merge (commutative, associative, idempotent), Bump, canonical encoding |
 | `internal/chunk` | Boundaries (0, <1 chunk, =1 chunk, +1 byte, many), one-byte change affects one chunk, reassembly |
-| `internal/store` | Schema creation, node ID persistence, put/get records, block lookup by hash |
+| `internal/store` | Schema creation, node ID persistence, put/get records, block lookup by hash, members persisted |
 | `internal/scan` | New / unchanged / same-content rewrite / modify / delete / re-create, nested dirs, `.p2psync/` ignored, stability check |
 | `internal/syncer` | `winner` order independence, `conflictName`, false conflict, edit beats delete, apply aborts when local file changed |
 | `internal/merkle` | Root independent of insertion order, one change touches one path in the tree |
-| `internal/membership` | Heartbeat timeouts, gossip merge rules, SWIM suspicion and refutation |
+| `internal/membership` | Heartbeat timeouts, unknown heartbeat ignored, gossip learn rules (unknown added as dead, missing ID filled, local state kept, self skipped), members reloaded as dead; SWIM suspicion and refutation (Phase 11) |
 
 Random property tests use `math/rand/v2` with a fixed seed printed on failure.
 
@@ -41,6 +41,8 @@ Scenarios:
 - Kill a node mid-download, restart it.
 - Delay filter on all links.
 - Partition and heal with membership (dead → alive).
+- Five nodes started with only `-seed` discover each other; a restarted node rejoins from its stored
+  members with the seed down.
 
 ## 3. Randomized convergence test
 

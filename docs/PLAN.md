@@ -194,21 +194,26 @@ Tests
 ## Phase 10 — Seed + gossip discovery
 
 Deliverables
-- `/join`, `/gossip`, incarnation-based merge, `members` table persistence, `--seed` flag.
+- `/join`, `/gossip`, member merge (learn unknown addresses and missing IDs), `members` table
+  persistence, `--seed` flag. Incarnation moved to Phase 11 (decided in Phase 10: with heartbeats
+  deciding liveness, a merged state would be overwritten every second).
 
 Acceptance
 - Five nodes started with only the seed address all know each other within a few seconds.
 - A restarted node rejoins using its stored members even if the seed is down.
 
 Tests
-- Member merge rules (unknown, higher incarnation, same incarnation worse state).
+- Member merge rules (unknown added as dead, missing ID filled, known ID and local state kept, self skipped).
 - Five in-process nodes discover each other from one seed.
+- Restarted node rejoins from stored members with the seed down.
 
 ## Phase 11 — SWIM
 
 Deliverables
 - `/ping`, `/ping-req`, round-robin probing, suspicion timeout, incarnation refutation,
   piggybacked dissemination. Replaces all-to-all heartbeats.
+- Incarnation per member (in messages and the `members` table) and the merge rule: higher
+  incarnation wins, same incarnation worse state wins (alive < suspect < dead).
 
 Acceptance
 - Dead node detected by all members; a slow-but-alive node refutes suspicion and is not declared dead.
@@ -217,6 +222,7 @@ Tests
 - Drop A→C link only: C is still alive thanks to ping-req through B.
 - Kill C: all members mark C dead within suspicion timeout + a few periods.
 - Suspected node increments incarnation and is marked alive again.
+- Member merge rules (higher incarnation, same incarnation worse state).
 - Count messages per period with 3 vs 8 nodes: per-node cost stays constant.
 
 ## Phase 12 — Web dashboard

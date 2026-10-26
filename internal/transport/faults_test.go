@@ -66,19 +66,19 @@ func TestAdminEndpoint(t *testing.T) {
 	addr := echoServer(t, faults)
 	admin := NewClient("", time.Second, NewFaults())
 
-	if err := admin.PostJSON(addr, "/admin/faults", map[string]any{"peer": "x:1", "drop": true}); err != nil {
+	if err := admin.PostJSON(addr, "/admin/faults", map[string]any{"peer": "x:1", "drop": true}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !faults.Rules()["x:1"].Drop {
 		t.Fatalf("rule not set: %v", faults.Rules())
 	}
-	if err := admin.PostJSON(addr, "/admin/faults", map[string]any{"peer": "x:1", "drop": false}); err != nil {
+	if err := admin.PostJSON(addr, "/admin/faults", map[string]any{"peer": "x:1", "drop": false}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(faults.Rules()) != 0 {
 		t.Errorf("rule not removed: %v", faults.Rules())
 	}
-	if err := admin.PostJSON(addr, "/admin/faults", map[string]any{"drop": true}); err == nil {
+	if err := admin.PostJSON(addr, "/admin/faults", map[string]any{"drop": true}, nil); err == nil {
 		t.Error("missing peer should be rejected")
 	}
 }
