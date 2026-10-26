@@ -5,7 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
+
+	"p2psync/internal/scan"
+	"p2psync/internal/store"
+	"p2psync/internal/vv"
 )
 
 type config struct {
@@ -40,11 +46,42 @@ func parseFlags(args []string) (config, error) {
 	return cfg, nil
 }
 
+func run(cfg config) error {
+	if err := os.MkdirAll(filepath.Join(cfg.dir, scan.MetaDir), 0o755); err != nil {
+		return err
+	}
+	st, err := store.Open(filepath.Join(cfg.dir, scan.MetaDir, "index.db"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	self, err := st.NodeID()
+	if err != nil {
+		return err
+	}
+	scanner := &scan.Scanner{Root: cfg.dir, Store: st, Self: self, StableDelay: 500 * time.Millisecond}
+	if _, err := scanner.Rescan(); err != nil {
+		return err
+	}
+	records, err := st.All()
+	if err != nil {
+		return err
+	}
+	fmt.Println("node", self)
+	for _, rec := range records {
+		fmt.Printf("%s %s deleted=%v size=%d hash=%.8s\n", rec.Path, vv.Encode(rec.Version), rec.Deleted, rec.Size, rec.Hash)
+	}
+	return nil
+}
+
 func main() {
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	fmt.Printf("dir=%s listen=%s advertise=%s peers=%v seed=%s\n", cfg.dir, cfg.listen, cfg.advertise, cfg.peers, cfg.seed)
+	if err := run(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }

@@ -140,8 +140,8 @@ CREATE TABLE members (
 | `meta` | Holds `node_id` |
 | `files.version` | Canonical JSON of the version vector |
 | `files.mtime` | Local only, used by the scanner |
-| `blocks` | Chunk list of the current version of each file. `blocks_by_hash` lets the node serve a chunk by hash and reuse local chunks when building a new file |
-| `members` | Last known membership, so a restarted node can rejoin without the seed |
+| `blocks` | Chunk list of the current version of each file. `blocks_by_hash` lets the node serve a chunk by hash and reuse local chunks when building a new file. A chunk's byte offset is `idx * 128 KiB` because all chunks except the last have the same size |
+| `members` | Last known membership, so a restarted node can rejoin without the seed. Created in Phase 10, when it is first used |
 
 ## 5. Messages (HTTP + JSON)
 
@@ -219,7 +219,9 @@ rescan():
 ```
 
 `stable(f)`: size and mtime unchanged over a short interval (500 ms), so half-written files are
-not hashed.
+not hashed. The implementation waits once per rescan, not once per file: it collects all changed
+files, sleeps 500 ms, then re-checks each one. A file that is still changing is skipped and picked up
+by the next rescan. It is also not tombstoned, because it was seen on disk.
 
 Watcher: fsnotify does not watch subfolders on its own. The watcher adds a watch on every directory at start
 and on every newly created directory. Each event schedules a debounced rescan of the affected path
@@ -483,7 +485,7 @@ sent about `3 * log(n)` times. Message cost per node per period is constant, ind
 
 | Module | Why |
 |---|---|
-| `modernc.org/sqlite` | SQLite driver in pure Go. No cgo, so `CGO_ENABLED=0` static builds run on the old PC regardless of its distro |
+| `modernc.org/sqlite` v1.59.0 | SQLite driver in pure Go. No cgo, so `CGO_ENABLED=0` static builds run on the old PC regardless of its distro. Pinned to v1.59.0 because v1.60+ requires Go 1.26 |
 | `github.com/fsnotify/fsnotify` | Go wrapper around inotify. Writing raw inotify syscalls by hand adds nothing to the distributed-systems part |
 
 Everything else uses the standard library (`net/http`, `encoding/json`, `crypto/sha256`,

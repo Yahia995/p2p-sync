@@ -21,9 +21,9 @@
 - [x] Boundary tests pass
 
 ## Phase 3 — Store + scanner
-- [ ] SQLite schema, WAL, node ID
-- [ ] Full rescan with tombstones and stability check
-- [ ] Scanner tests pass
+- [x] SQLite schema, WAL, node ID
+- [x] Full rescan with tombstones and stability check
+- [x] Store and scanner tests pass
 
 ## Phase 4 — Transport + full index exchange
 - [ ] /index, /file, /block, /status
