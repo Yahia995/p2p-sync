@@ -17,8 +17,8 @@
 - [x] Table tests and property tests pass
 
 ## Phase 2 — Chunking
-- [ ] 128 KiB chunks, SHA-256 per chunk and per file
-- [ ] Boundary tests pass
+- [x] 128 KiB chunks, SHA-256 per chunk and per file (matches sha256sum)
+- [x] Boundary tests pass
 
 ## Phase 3 — Store + scanner
 - [ ] SQLite schema, WAL, node ID
