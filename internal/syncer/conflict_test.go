@@ -209,8 +209,12 @@ func TestConcurrentEditsKeepBoth(t *testing.T) {
 				relay.pull(t, b)
 				b.pull(t, a)
 				a.pull(t, relay)
-				if !maps.Equal(index(t, a), index(t, b)) || !maps.Equal(folder(t, a), folder(t, b)) {
-					t.Fatalf("independent resolutions differ:\n%v\n%v", index(t, a), index(t, b))
+				if !maps.Equal(folder(t, a), folder(t, b)) {
+					t.Fatalf("independent resolutions picked different content:\n%v\n%v", folder(t, a), folder(t, b))
+				}
+				ra, rb := a.record(t, "report.txt"), b.record(t, "report.txt")
+				if vv.Compare(ra.Version, rb.Version) != vv.Concurrent {
+					t.Fatalf("each resolver must add its own counter: %v vs %v", ra.Version, rb.Version)
 				}
 			}
 			syncAll(t, a, b)

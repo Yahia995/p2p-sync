@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ type handler struct {
 	root  string
 }
 
-func NewHandler(st *store.Store, root string) http.Handler {
+func NewHandler(st *store.Store, root string) *http.ServeMux {
 	h := &handler{store: st, root: root}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /index", h.index)
@@ -38,7 +39,7 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, records)
+	WriteJSON(w, records)
 }
 
 func (h *handler) file(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +58,7 @@ func (h *handler) file(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, FileInfo{Record: rec, Blocks: blocks})
+	WriteJSON(w, FileInfo{Record: rec, Blocks: blocks})
 }
 
 func (h *handler) block(w http.ResponseWriter, r *http.Request) {
@@ -80,17 +81,19 @@ func (h *handler) block(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-func writeJSON(w http.ResponseWriter, value any) {
+func WriteJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(value)
 }
 
 type Client struct {
-	http *http.Client
+	http   *http.Client
+	self   string
+	faults *Faults
 }
 
-func NewClient(timeout time.Duration) *Client {
-	return &Client{http: &http.Client{Timeout: timeout}}
+func NewClient(self string, timeout time.Duration, faults *Faults) *Client {
+	return &Client{http: &http.Client{Timeout: timeout}, self: self, faults: faults}
 }
 
 func (c *Client) Index(addr string) ([]store.Record, error) {
@@ -123,13 +126,41 @@ func (c *Client) getJSON(addr, path string, query url.Values, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+func (c *Client) PostJSON(addr, path string, body any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(http.MethodPost, addr, path, nil, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 func (c *Client) get(addr, path string, query url.Values) (*http.Response, error) {
+	return c.do(http.MethodGet, addr, path, query, nil)
+}
+
+func (c *Client) do(method, addr, path string, query url.Values, body io.Reader) (*http.Response, error) {
+	rule := c.faults.rule(addr)
+	if rule.Drop {
+		return nil, fmt.Errorf("%s %s: dropped by fault filter", addr, path)
+	}
+	time.Sleep(time.Duration(rule.DelayMs) * time.Millisecond)
+
 	target := url.URL{Scheme: "http", Host: addr, Path: path, RawQuery: query.Encode()}
-	resp, err := c.http.Get(target.String())
+	req, err := http.NewRequest(method, target.String(), body)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
+	req.Header.Set(peerHeader, c.self)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
 		resp.Body.Close()
 		return nil, fmt.Errorf("%s %s: %s", addr, path, resp.Status)
 	}

@@ -36,7 +36,7 @@ func conflictCopy(loser store.Record) store.Record {
 }
 
 func (s *Syncer) resolveConflict(addr string, local, remote store.Record) error {
-	merged := vv.Merge(local.Version, remote.Version)
+	merged := vv.Bump(vv.Merge(local.Version, remote.Version), s.Self)
 	if beats(remote, local) {
 		if !local.Deleted {
 			if err := s.keepLocalCopy(local); err != nil {

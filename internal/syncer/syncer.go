@@ -22,6 +22,7 @@ import (
 var errLocalChanged = errors.New("local file changed since the decision, retry later")
 
 type Syncer struct {
+	Self   string
 	Root   string
 	Store  *store.Store
 	Lock   *sync.Mutex

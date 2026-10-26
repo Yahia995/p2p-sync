@@ -1,0 +1,182 @@
+package node
+
+import (
+	"context"
+	"log"
+	"math/rand/v2"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"p2psync/internal/membership"
+	"p2psync/internal/scan"
+	"p2psync/internal/store"
+	"p2psync/internal/syncer"
+	"p2psync/internal/transport"
+)
+
+type Config struct {
+	Dir       string
+	Listen    string
+	Advertise string
+	Peers     []string
+	Faults    *transport.Faults
+	Logger    *log.Logger
+
+	StableDelay      time.Duration
+	Debounce         time.Duration
+	RescanEvery      time.Duration
+	AntiEntropyEvery time.Duration
+	HeartbeatEvery   time.Duration
+	SuspectAfter     time.Duration
+	DeadAfter        time.Duration
+	RequestTimeout   time.Duration
+}
+
+func Defaults() Config {
+	return Config{
+		StableDelay:      500 * time.Millisecond,
+		Debounce:         200 * time.Millisecond,
+		RescanEvery:      60 * time.Second,
+		AntiEntropyEvery: 5 * time.Second,
+		HeartbeatEvery:   time.Second,
+		SuspectAfter:     3 * time.Second,
+		DeadAfter:        10 * time.Second,
+		RequestTimeout:   10 * time.Second,
+	}
+}
+
+type Node struct {
+	ID      string
+	Addr    string
+	Store   *store.Store
+	Scanner *scan.Scanner
+	Syncer  *syncer.Syncer
+	Members *membership.List
+	Faults  *transport.Faults
+
+	log    *log.Logger
+	server *http.Server
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+type status struct {
+	ID      string                    `json:"id"`
+	Addr    string                    `json:"addr"`
+	Files   int                       `json:"files"`
+	Members []membership.Member       `json:"members"`
+	Faults  map[string]transport.Rule `json:"faults"`
+}
+
+func Start(cfg Config) (*Node, error) {
+	if err := os.MkdirAll(filepath.Join(cfg.Dir, scan.MetaDir), 0o755); err != nil {
+		return nil, err
+	}
+	st, err := store.Open(filepath.Join(cfg.Dir, scan.MetaDir, "index.db"))
+	if err != nil {
+		return nil, err
+	}
+	id, err := st.NodeID()
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+
+	n := &Node{ID: id, Addr: cfg.Advertise, Store: st, Faults: cfg.Faults, log: cfg.Logger}
+	if n.Addr == "" {
+		n.Addr = listener.Addr().String()
+	}
+	if n.Faults == nil {
+		n.Faults = transport.NewFaults()
+	}
+	if n.log == nil {
+		n.log = log.Default()
+	}
+
+	lock := &sync.Mutex{}
+	n.Scanner = &scan.Scanner{Root: cfg.Dir, Store: st, Self: id, Lock: lock, StableDelay: cfg.StableDelay}
+	n.Syncer = &syncer.Syncer{Self: id, Root: cfg.Dir, Store: st, Lock: lock, Client: transport.NewClient(n.Addr, cfg.RequestTimeout, n.Faults)}
+	if err := n.Syncer.ResetTmp(); err != nil {
+		listener.Close()
+		st.Close()
+		return nil, err
+	}
+	heartbeatClient := transport.NewClient(n.Addr, cfg.HeartbeatEvery, n.Faults)
+	n.Members = membership.New(id, n.Addr, cfg.Peers, heartbeatClient, cfg.SuspectAfter, cfg.DeadAfter)
+
+	mux := transport.NewHandler(st, cfg.Dir)
+	mux.HandleFunc("POST /heartbeat", n.Members.HandleHeartbeat)
+	mux.HandleFunc("POST /admin/faults", n.Faults.HandleAdmin)
+	mux.HandleFunc("GET /status", n.handleStatus)
+	n.server = &http.Server{Handler: n.Faults.Wrap(mux)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	n.cancel = cancel
+	n.background(func() { n.server.Serve(listener) })
+	n.background(func() {
+		if err := n.Scanner.Watch(ctx, cfg.Debounce, cfg.RescanEvery); err != nil {
+			n.log.Println("watcher:", err)
+		}
+	})
+	n.background(func() { n.Members.Run(ctx, cfg.HeartbeatEvery) })
+	n.background(func() { n.antiEntropy(ctx, cfg.AntiEntropyEvery) })
+	return n, nil
+}
+
+func (n *Node) background(task func()) {
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		task()
+	}()
+}
+
+func (n *Node) antiEntropy(ctx context.Context, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		alive := n.Members.Alive()
+		if len(alive) == 0 {
+			continue
+		}
+		if err := n.Syncer.SyncWith(alive[rand.IntN(len(alive))]); err != nil {
+			n.log.Println("sync:", err)
+		}
+	}
+}
+
+func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
+	records, err := n.Store.All()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	transport.WriteJSON(w, status{
+		ID:      n.ID,
+		Addr:    n.Addr,
+		Files:   len(records),
+		Members: n.Members.Members(),
+		Faults:  n.Faults.Rules(),
+	})
+}
+
+func (n *Node) Stop() {
+	n.cancel()
+	n.server.Close()
+	n.wg.Wait()
+	n.Store.Close()
+}

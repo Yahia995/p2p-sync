@@ -49,7 +49,8 @@ exchanging metadata (version vectors) and pulling missing content (chunks).
 | Transport | `internal/transport` | HTTP server and client, JSON messages, in-app fault filter |
 | Membership | `internal/membership` | Static peers, heartbeats, seed + gossip, SWIM |
 | Dashboard | `internal/dashboard` | Read-only HTML status page |
-| Wiring / CLI | `cmd/p2psync` | Flags, starts all goroutines |
+| Node wiring | `internal/node` | `Start(cfg)` / `Stop()`: opens the store, starts HTTP server, watcher, membership, anti-entropy; serves `/status`. Used by `main` and by the cluster tests |
+| CLI | `cmd/p2psync` | Flags, `node.Start`, stop on Ctrl-C |
 
 Concurrency model: one `sync.Mutex` per node guards every change to the store and the folder
 (local scan updates and remote applies). Network I/O and chunk downloads happen outside the lock.
@@ -145,8 +146,11 @@ CREATE TABLE members (
 
 ## 5. Messages (HTTP + JSON)
 
-All endpoints are on the node's listen address. Every request carries header `X-Node-ID` so the
-fault filter can identify the sender.
+All endpoints are on the node's listen address. Every request carries header `X-Node-Addr` (the
+sender's advertised address) so the fault filter can identify the sender. Peers are identified by
+advertised address rather than node ID because static peers are configured by address, so a rule
+works before the first heartbeat, and the demo `curl` commands take an address. Node IDs still
+appear in `/status`.
 
 | Method | Path | Request | Response | Used by |
 |---|---|---|---|---|
@@ -400,7 +404,7 @@ winner(a, winner(b, c))`. Three-way conflicts resolve the same everywhere.
 resolveConflict(peer, l, r):
     w = winner(l, r)
     lose = the other one
-    merged = merge(l.version, r.version)
+    merged = bump(merge(l.version, r.version), self)
     if !lose.deleted:
         copyPath = conflictName(lose.path, lose.hash)
         handleLocalCopy(copyPath, lose)
@@ -413,12 +417,19 @@ resolveConflict(peer, l, r):
 - The conflict copy record is `{path: copyPath, version: lose.version, hash: lose.hash, blocks:
   lose.blocks}`. Every node that resolves the same conflict creates byte-identical records, so
   the copies never conflict with each other.
-- The winning record gets `merge(l.version, r.version)` with **no** increment. Every node that
-  resolves the same conflict on its own computes the same vector and content, so the results are
-  `Equal` immediately. If each resolver added its own counter, the results would still converge
-  (concurrent but equal content, so the false-conflict rule merges them), but every resolver would
-  add an entry to the vector and cost an extra round. A real later edit increments a counter and
-  dominates the merged vector.
+- The winning record gets `bump(merge(l.version, r.version), self)`: the resolving node adds its own
+  counter. This keeps the invariant **same version vector ⇒ same content** on every node. Without
+  the increment, two different pairs of concurrent versions can have the same merge and still pick
+  different winners. Example: `{P:1}`+`{Q:3}` and `{P:1,Q:2}`+`{Q:3}` both merge to `{P:1,Q:3}`.
+  Two nodes then hold `Equal` vectors with different content, and anti-entropy never repairs it,
+  because `Equal` means "nothing to do". The randomized convergence test found exactly this in
+  Phase 7 (about 1 run in 8 of seed 2); Phase 5 had wrongly used the merge without the increment.
+- Every operation that chooses content (local edit, conflict resolution) adds a fresh counter.
+  Only the false-conflict merge (equal content on both sides) uses `merge` alone. Merging versions
+  with the same content cannot create a vector that means two different contents.
+- Two nodes that resolve the same conflict independently now produce concurrent versions with the
+  same content (each has its own counter). The false-conflict rule merges them on the next exchange.
+  This costs one extra entry per resolver and one extra round, which is the price of correctness.
 - If the loser is the local version, its content is already on disk: it is copied to `copyPath`
   before the winner is written. If the loser is remote, its chunks are fetched like in `apply`.
 - Order matters: the copy is installed first, and the winner only if that succeeded. If the copy
@@ -455,12 +466,18 @@ Member states: `alive`, `suspect`, `dead`. Sync and push only target `alive` mem
 ### 9.1 Static peers + all-to-all heartbeats (first version)
 
 ```
-every 1 s: send POST /heartbeat to every configured peer
-on heartbeat from p: lastHeard[p] = now; state[p] = alive
+every 1 s: send POST /heartbeat to every known member (also dead ones, so they can come back)
+on heartbeat from p: lastHeard[p] = now; state[p] = alive   (unknown senders are added)
 every 1 s: for p:
-    if now - lastHeard[p] > 3 s:  state[p] = suspect
-    if now - lastHeard[p] > 10 s: state[p] = dead
+    if now - lastHeard[p] < 3 s:  state[p] = alive
+    else if < 10 s:               state[p] = suspect
+    else:                         state[p] = dead
 ```
+
+A peer that has never been heard from starts as `dead`. Only incoming heartbeats count as hearing
+a peer, not successful outgoing ones. With a one-way cut (A can reach B but B cannot reach A), B
+sees A alive and A sees B dead. That asymmetry is what you would observe in a real network, and it
+is visible on `/status`. Membership lives in `internal/membership`.
 
 Message cost: O(n²) per second. Fine for under 10 nodes, and the reason to move to SWIM.
 
@@ -513,8 +530,9 @@ sent about `3 * log(n)` times. Message cost per node per period is constant, ind
 
 ## 11. Fault injection hooks
 
-- In-app filter in the transport: per peer ID, `drop` (reject incoming and refuse outgoing
-  requests) and `delay_ms`. Set from tests directly, or at runtime via `POST /admin/faults`.
+- In-app filter in the transport (`transport.Faults`): per peer address, `drop` (incoming requests
+  from that peer get 503, outgoing requests to it fail without being sent) and `delay_ms` (each
+  request on the link is delayed once, on this node's side). Set from tests directly, or at runtime via `POST /admin/faults`.
   Works for nodes on the same machine, where tc and firewalld cannot separate them.
 - Network namespaces (`scripts/netns.sh`): each local node in its own namespace connected through
   a bridge, so `tc netem` and `nft` rules apply per node. Needs root.

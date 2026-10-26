@@ -142,21 +142,25 @@ Tests
 ## Phase 7 — Heartbeats, fault filter, convergence test
 
 Deliverables
-- `/status` endpoint (node ID, members, file count) used by tests to wait for convergence.
-- `internal/membership`: all-to-all heartbeats, alive/suspect/dead with timeouts; sync only with alive peers.
-- Transport fault filter (drop, delay per peer) and `POST /admin/faults`.
+- `internal/node`: `Start(cfg)` / `Stop()` wiring used by `main` and tests; `/status` (node ID,
+  address, file count, members, active fault rules).
+- `internal/membership`: all-to-all heartbeats, alive/suspect/dead with timeouts; anti-entropy only
+  picks alive peers.
+- Transport fault filter (drop, delay per peer address), `X-Node-Addr` header, `POST /admin/faults`.
 - Randomized convergence test (TESTING.md section 3).
 - `scripts/netns.sh` for same-machine network namespaces.
 
 Acceptance
 - Stopping a node marks it suspect then dead on all others within the timeouts; restarting it
   brings it back to alive and it catches up.
-- Convergence test passes for 50 random seeds.
+- Convergence test passes for 50 random seeds (200 used in practice).
 
 Tests
-- Partition A|B, edits on both sides, heal → converge with conflict copies.
-- Node killed mid-download → no partial file, converges after restart.
-- Delay filter of 2 s → still converges.
+- Membership state transitions (unit).
+- Fault filter: drop outgoing, drop incoming, delay, admin endpoint.
+- Crash and recovery with offline edits; partition A|B with edits on both sides, heal → one
+  conflict copy; 100 ms delay on all links (timers scaled down, so 100 ms plays the role of 2 s);
+  source node killed mid-download → no partial file, temp cleaned, converges after restart.
 - Randomized convergence test.
 
 ## Phase 8 — Merkle anti-entropy
@@ -238,4 +242,5 @@ Acceptance
 
 Tests
 - Convergence test passes with `-race`.
+- `scripts/netns.sh` verified with sudo on the main PC.
 - Manual demo checklist completed.

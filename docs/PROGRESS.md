@@ -38,7 +38,8 @@
 - [x] Deterministic winner, conflict naming, keep-both (copy before winner)
 - [x] Edit beats delete
 - [x] Two-node and three-node conflict tests pass
-- [x] Mutation check: tests fail if the winner rule, copy-first order, or no-increment rule is broken
+- [x] Mutation check: tests fail if the winner rule or copy-first order is broken
+- [x] Fixed in Phase 7: the resolver now adds its own counter to the merged vector (the "no increment" rule was wrong, found by the convergence test)
 
 ## Phase 6 — Watcher + echo suppression
 - [x] Recursive fsnotify watcher with debounce (200 ms, then full rescan)
@@ -47,12 +48,16 @@
 - [x] Manual check: new nested folder on node A reaches node B in about 4 s
 
 ## Phase 7 — Failure detection + convergence
-- [ ] /status endpoint
-- [ ] All-to-all heartbeats, alive/suspect/dead
-- [ ] In-app fault filter and /admin/faults
-- [ ] scripts/netns.sh
-- [ ] Partition / crash / delay tests pass
-- [ ] Randomized convergence test passes for 50 seeds
+- [x] /status endpoint
+- [x] internal/node wiring (Start/Stop), main.go reduced to flags + Ctrl-C
+- [x] All-to-all heartbeats, alive/suspect/dead
+- [x] In-app fault filter (by peer address) and /admin/faults
+- [x] scripts/netns.sh (syntax-checked; not yet run with sudo)
+- [x] Crash / partition / delay / mid-download crash tests pass
+- [x] Randomized convergence test passes (10 seeds in make test, 200 seeds before closing)
+- [x] Bug found and fixed: equal version vectors with different content after conflict resolution
+- [x] Manual check: two processes, cut with /admin/faults → suspect → dead, heal → alive, file arrives
+- [ ] Run scripts/netns.sh up/run/down on the main PC (needs sudo)
 
 ## Phase 8 — Merkle anti-entropy
 - [ ] Fixed 16x16 bucket tree, /merkle endpoint, walk

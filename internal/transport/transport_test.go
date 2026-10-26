@@ -32,7 +32,7 @@ func TestFileAndBlock(t *testing.T) {
 	os.WriteFile(path, []byte("hello"), 0o644)
 	blocks, hash, _ := chunk.HashFile(path)
 	st.Put(store.Record{Path: "a.txt", Version: vv.Vector{"n1": 1}, Hash: hash, Size: 5, MTime: 123}, blocks)
-	client := NewClient(time.Second)
+	client := NewClient("test", time.Second, NewFaults())
 
 	records, err := client.Index(addr)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestFileAndBlock(t *testing.T) {
 
 func TestErrors(t *testing.T) {
 	st, root, addr := serve(t)
-	client := NewClient(time.Second)
+	client := NewClient("test", time.Second, NewFaults())
 
 	if _, err := client.File(addr, "missing"); err == nil {
 		t.Error("expected error for unknown file")

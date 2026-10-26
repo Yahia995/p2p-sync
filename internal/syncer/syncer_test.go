@@ -48,7 +48,7 @@ func startNode(t *testing.T) *testNode {
 	lock := &sync.Mutex{}
 	n := &testNode{root: root, store: st}
 	n.scanner = &scan.Scanner{Root: root, Store: st, Self: self, Lock: lock}
-	n.syncer = &Syncer{Root: root, Store: st, Lock: lock, Client: transport.NewClient(5 * time.Second)}
+	n.syncer = &Syncer{Self: self, Root: root, Store: st, Lock: lock, Client: transport.NewClient("test", 5*time.Second, transport.NewFaults())}
 	if err := n.syncer.ResetTmp(); err != nil {
 		t.Fatal(err)
 	}

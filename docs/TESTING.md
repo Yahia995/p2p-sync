@@ -5,7 +5,9 @@ Commands:
 ```
 make test    # go test ./...
 make race    # go test -race ./...
-go test ./internal/syncer -run Convergence -count=1 -v
+go test ./internal/node -run Convergence -count=1 -v
+CONVERGENCE_SEEDS=200 go test ./internal/node -run Convergence -count=1 -timeout 30m
+CONVERGENCE_FIRST_SEED=2 CONVERGENCE_SEEDS=1 go test ./internal/node -run Convergence -count=20
 ```
 
 ## 1. Unit tests
@@ -49,20 +51,21 @@ folders and identical indexes.
 TestConvergence(seed):
     rng = rand.New(seed)
     start N = 5 nodes, full mesh, short timers
-    repeat 200 steps:
+    repeat 60 steps:
         pick an action with rng:
-            create file   (random node, random path from a small set of 10 paths, random content)
-            modify file   (existing path on random node)
-            delete file   (existing path on random node)
-            partition     (random split of nodes into two groups, drop links between them)
-            heal          (remove all drop rules)
-            delay link    (random pair, random delay up to 200 ms)
-            restart node  (stop, keep folder and DB, start again)
-        short random pause (0–50 ms)
-    heal everything, stop issuing edits
-    wait until every node reports the same Merkle root (or same index), with a deadline
+            write file    (random node, random path from a fixed set of 10, new random content;
+                           1 in 8 writes is a 1-3 chunk binary file)
+            delete file   (random node, random path from the same set)
+            partition     (random split of the 5 nodes into two non-empty sides, drop links between them)
+            heal          (remove all fault rules)
+            delay link    (random pair, random delay up to 100 ms)
+            crash/restart (stop a running node, or start a stopped one; keep folder and DB)
+        short random pause (0-30 ms)
+    heal everything, start every stopped node, stop issuing edits
+    wait (max 30 s) until every node is quiescent and identical
     assert:
-        all folders have the same set of paths and the same bytes per path
+        on every node, the files on disk match the non-deleted records of its own index
+        all folders have the same set of paths and the same content hash per path
         all indexes have the same records (path, version, deleted, hash)
         no file in .p2psync/tmp
         every conflict copy name matches its content hash
@@ -70,16 +73,30 @@ TestConvergence(seed):
 ```
 
 A small path set (10 paths) is chosen on purpose: it forces many concurrent edits on the same files.
-The test runs with 50 seeds in `make test`; a longer run (`-run Convergence -count=1` with a
-`CONVERGENCE_SEEDS=1000` environment variable) is used before the demo.
+Typical runs end with 6-16 conflict copies per seed. Writes to a stopped node's folder are offline
+edits, which the node picks up when it restarts.
+
+Timers are scaled down (heartbeat 50 ms, suspect 200 ms, dead 500 ms, anti-entropy 50 ms), so one
+seed takes about 2-3 s. `make test` runs 10 seeds (`CONVERGENCE_SEEDS` raises it; 200 seeds are run
+before each phase is closed). `CONVERGENCE_FIRST_SEED` replays one seed. A seed reproduces the
+sequence of actions, not the exact goroutine interleaving, so a rare failure may need `-count=20`
+to show up again.
+
+Seeds run one after another, not in parallel, because each node uses one inotify instance and the
+default limit is 128 per user.
+
+The test is checked to have teeth: with conflict handling removed, every seed fails. It also found
+a real bug (ARCHITECTURE.md 8.3).
 
 ## 4. Fault injection
 
 ### 4.1 In-app filter (tests and same-machine demo)
 
 ```
-curl -X POST localhost:7001/admin/faults -d '{"peer":"<id of node2>","drop":true}'
-curl -X POST localhost:7001/admin/faults -d '{"peer":"<id of node2>","drop":false,"delay_ms":500}'
+curl -X POST localhost:7001/admin/faults -d '{"peer":"127.0.0.1:7002","drop":true}'
+curl -X POST localhost:7001/admin/faults -d '{"peer":"127.0.0.1:7002","drop":false,"delay_ms":500}'
+curl -X POST localhost:7001/admin/faults -d '{"peer":"127.0.0.1:7002","drop":false}'
+curl -s localhost:7001/status
 ```
 
 A dropped link fails in both directions (incoming requests from that peer get 503, outgoing
@@ -87,12 +104,23 @@ requests to it are not sent).
 
 ### 4.2 Network namespaces (same machine, real network faults)
 
-`scripts/netns.sh up 3` creates namespaces `p2p1..p2p3`, a bridge `br-p2p`, one veth pair per
-namespace, addresses `10.77.0.1..3/24`. Each node is started inside its namespace:
+`scripts/netns.sh up 3` creates namespaces `p2p1..p2p3`, a bridge `br-p2p` (host address
+`10.77.0.254`, so `curl` from the host works), one veth pair per namespace, addresses
+`10.77.0.1..3/24`. Each node is started inside its namespace, as your user (not root), with its
+folder in `nodes/nsI`:
 
 ```
-sudo ip netns exec p2p1 ./bin/p2psync --dir nodes/n1 --listen 10.77.0.1:7001 --advertise 10.77.0.1:7001 ...
+make build
+./scripts/netns.sh up 3
+./scripts/netns.sh run 1 -peers 10.77.0.2:7001,10.77.0.3:7001
+./scripts/netns.sh run 2 -peers 10.77.0.1:7001,10.77.0.3:7001
+./scripts/netns.sh run 3 -peers 10.77.0.1:7001,10.77.0.2:7001
+curl -s 10.77.0.1:7001/status
 ```
+
+Not yet run on real hardware (it needs sudo). First check after `up`:
+`sudo ip netns exec p2p1 ping -c1 10.77.0.2`. If the ping fails, the bridge traffic is being filtered
+on the host. Check `sysctl net.bridge.bridge-nf-call-iptables` and firewalld's zone for `br-p2p`.
 
 Faults on one node's link:
 

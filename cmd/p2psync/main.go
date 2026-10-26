@@ -6,25 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand/v2"
-	"net/http"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"strings"
-	"sync"
-	"time"
+	"syscall"
 
-	"p2psync/internal/scan"
-	"p2psync/internal/store"
-	"p2psync/internal/syncer"
-	"p2psync/internal/transport"
-)
-
-const (
-	watchDebounce     = 200 * time.Millisecond
-	rescanPeriod      = 60 * time.Second
-	antiEntropyPeriod = 5 * time.Second
-	requestTimeout    = 10 * time.Second
+	"p2psync/internal/node"
 )
 
 type config struct {
@@ -59,50 +46,24 @@ func parseFlags(args []string) (config, error) {
 	return cfg, nil
 }
 
-func every(period time.Duration, task func() error) {
-	for {
-		if err := task(); err != nil {
-			log.Println(err)
-		}
-		time.Sleep(period)
-	}
-}
-
 func run(cfg config) error {
-	if err := os.MkdirAll(filepath.Join(cfg.dir, scan.MetaDir), 0o755); err != nil {
-		return err
-	}
-	st, err := store.Open(filepath.Join(cfg.dir, scan.MetaDir, "index.db"))
+	nodeCfg := node.Defaults()
+	nodeCfg.Dir = cfg.dir
+	nodeCfg.Listen = cfg.listen
+	nodeCfg.Advertise = cfg.advertise
+	nodeCfg.Peers = cfg.peers
+
+	n, err := node.Start(nodeCfg)
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	self, err := st.NodeID()
-	if err != nil {
-		return err
-	}
+	log.Printf("node %s listening on %s, advertised as %s, peers %v", n.ID, cfg.listen, n.Addr, cfg.peers)
 
-	lock := &sync.Mutex{}
-	scanner := &scan.Scanner{Root: cfg.dir, Store: st, Self: self, Lock: lock, StableDelay: 500 * time.Millisecond}
-	engine := &syncer.Syncer{Root: cfg.dir, Store: st, Lock: lock, Client: transport.NewClient(requestTimeout)}
-	if err := engine.ResetTmp(); err != nil {
-		return err
-	}
-
-	go func() {
-		if err := scanner.Watch(context.Background(), watchDebounce, rescanPeriod); err != nil {
-			log.Fatal(err)
-		}
-	}()
-	go every(antiEntropyPeriod, func() error {
-		if len(cfg.peers) == 0 {
-			return nil
-		}
-		return engine.SyncWith(cfg.peers[rand.IntN(len(cfg.peers))])
-	})
-
-	log.Printf("node %s listening on %s, peers %v", self, cfg.listen, cfg.peers)
-	return http.ListenAndServe(cfg.listen, transport.NewHandler(st, cfg.dir))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
+	n.Stop()
+	return nil
 }
 
 func main() {
