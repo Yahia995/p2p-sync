@@ -157,7 +157,7 @@ appear in `/status`.
 | GET | `/index` | — | `[]Record` (no blocks) | Full index exchange |
 | GET | `/file?path=P` | — | `Record` with `blocks` | Before downloading |
 | GET | `/block?hash=H` | — | raw bytes | Chunk transfer |
-| GET | `/merkle?node=X` | — | `{"node":X,"hash":..,"children":[16 hashes]}` or leaf records | Merkle anti-entropy |
+| GET | `/merkle?node=X` | — | `{"node":X,"hash":..,"children":[16 hashes]}` for `X` = `""` or one hex digit, `{"node":X,"hash":..,"records":[]Record}` for two hex digits | Merkle anti-entropy |
 | POST | `/push` | `{"from":id,"records":[]Record}` | 204 | Push on change |
 | POST | `/heartbeat` | `{"from":id,"addr":..}` | 204 | All-to-all heartbeats |
 | POST | `/join` | `Member` | `[]Member` | Seed + gossip |
@@ -368,8 +368,23 @@ walk(peer, node):
         if remote.children[i] != local.hash(child): walk(peer, child)
 ```
 
-Hashes are recomputed from the store when needed (cached and invalidated on writes if profiling
-shows it matters). When two nodes agree, one request (the root) is enough.
+The tree is rebuilt from the store on every `/merkle` request and once per walk on the pulling
+side. That is O(number of files) and simple; caching would need invalidation on every write and
+is not worth it at this size. Measured costs (tests in `internal/syncer/merkle_test.go`):
+
+| Situation | `/merkle` requests | Other requests |
+|---|---|---|
+| Nodes in sync | 1 (root) | 0 |
+| One file differs | 3 (root, inner, leaf) | 1 `/file` + missing blocks |
+| Everything differs | up to 1 + 16 + 256 | per file |
+
+Like the full index exchange, the Merkle walk is pull-only: it fetches the records in buckets where
+the hashes differ and runs `handleRemote` on each. Records that only the puller has are picked up
+when the peer pulls from it. The `local` and `remote` sides of a bucket can differ for either
+reason, and the walk is the same.
+
+`/index` and `SyncWith` remain (tests, debugging, `curl`). Since Phase 8 the node's anti-entropy loop
+uses `SyncMerkle`, so the randomized convergence test exercises the Merkle path.
 
 ### 7.5 Push on change
 

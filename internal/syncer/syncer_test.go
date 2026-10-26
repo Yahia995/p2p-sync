@@ -21,13 +21,26 @@ import (
 )
 
 type testNode struct {
-	root        string
-	store       *store.Store
-	scanner     *scan.Scanner
-	syncer      *Syncer
-	addr        string
-	blockServed atomic.Int64
-	corrupt     atomic.Bool
+	root     string
+	store    *store.Store
+	scanner  *scan.Scanner
+	syncer   *Syncer
+	addr     string
+	corrupt  atomic.Bool
+	countsMu sync.Mutex
+	counts   map[string]int
+}
+
+func (n *testNode) served(path string) int {
+	n.countsMu.Lock()
+	defer n.countsMu.Unlock()
+	return n.counts[path]
+}
+
+func (n *testNode) resetCounts() {
+	n.countsMu.Lock()
+	defer n.countsMu.Unlock()
+	n.counts = map[string]int{}
 }
 
 func startNode(t *testing.T) *testNode {
@@ -46,7 +59,7 @@ func startNode(t *testing.T) *testNode {
 		t.Fatal(err)
 	}
 	lock := &sync.Mutex{}
-	n := &testNode{root: root, store: st}
+	n := &testNode{root: root, store: st, counts: map[string]int{}}
 	n.scanner = &scan.Scanner{Root: root, Store: st, Self: self, Lock: lock}
 	n.syncer = &Syncer{Self: self, Root: root, Store: st, Lock: lock, Client: transport.NewClient("test", 5*time.Second, transport.NewFaults())}
 	if err := n.syncer.ResetTmp(); err != nil {
@@ -55,8 +68,10 @@ func startNode(t *testing.T) *testNode {
 
 	handler := transport.NewHandler(st, root)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.countsMu.Lock()
+		n.counts[r.URL.Path]++
+		n.countsMu.Unlock()
 		if r.URL.Path == "/block" {
-			n.blockServed.Add(1)
 			if n.corrupt.Load() {
 				w.Write([]byte("garbage"))
 				return
@@ -216,12 +231,12 @@ func TestOlderVersionIgnored(t *testing.T) {
 	b.write(t, "f.txt", []byte("v2 on b"))
 	b.rescan(t)
 
-	a.blockServed.Store(0)
+	a.resetCounts()
 	b.pull(t, a)
 	if got := b.read(t, "f.txt"); string(got) != "v2 on b" {
 		t.Fatalf("newer local version overwritten: %q", got)
 	}
-	if a.blockServed.Load() != 0 {
+	if a.served("/block") != 0 {
 		t.Error("blocks were requested for an older version")
 	}
 }
@@ -232,8 +247,8 @@ func TestOnlyChangedChunkTransferred(t *testing.T) {
 	a.write(t, "big.bin", data)
 	a.rescan(t)
 	b.pull(t, a)
-	if a.blockServed.Load() != 6 {
-		t.Fatalf("first transfer requested %d blocks, want 6", a.blockServed.Load())
+	if a.served("/block") != 6 {
+		t.Fatalf("first transfer requested %d blocks, want 6", a.served("/block"))
 	}
 	if !bytes.Equal(b.read(t, "big.bin"), data) {
 		t.Fatal("big file differs")
@@ -242,10 +257,10 @@ func TestOnlyChangedChunkTransferred(t *testing.T) {
 	data[3*chunk.Size+7] ^= 0xff
 	a.write(t, "big.bin", data)
 	a.rescan(t)
-	a.blockServed.Store(0)
+	a.resetCounts()
 	b.pull(t, a)
-	if a.blockServed.Load() != 1 {
-		t.Errorf("update requested %d blocks, want 1", a.blockServed.Load())
+	if a.served("/block") != 1 {
+		t.Errorf("update requested %d blocks, want 1", a.served("/block"))
 	}
 	if !bytes.Equal(b.read(t, "big.bin"), data) {
 		t.Fatal("updated big file differs")

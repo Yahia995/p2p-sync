@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"p2psync/internal/chunk"
+	"p2psync/internal/merkle"
 	"p2psync/internal/scan"
 	"p2psync/internal/store"
 	"p2psync/internal/transport"
@@ -53,6 +54,44 @@ func (s *Syncer) SyncWith(addr string) error {
 	for _, r := range records {
 		if err := s.handleRemote(addr, r); err != nil && !errors.Is(err, errLocalChanged) {
 			errs = append(errs, fmt.Errorf("%s: %w", r.Path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Syncer) SyncMerkle(addr string) error {
+	records, err := s.Store.All()
+	if err != nil {
+		return err
+	}
+	return s.walk(addr, merkle.Build(records), "")
+}
+
+func (s *Syncer) walk(addr string, local *merkle.Tree, id string) error {
+	remote, err := s.Client.Merkle(addr, id)
+	if err != nil {
+		return err
+	}
+	if remote.Hash == local.Hash(id) {
+		return nil
+	}
+	var errs []error
+	if merkle.IsLeaf(id) {
+		for _, r := range remote.Records {
+			if err := s.handleRemote(addr, r); err != nil && !errors.Is(err, errLocalChanged) {
+				errs = append(errs, fmt.Errorf("%s: %w", r.Path, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+	if len(remote.Children) != 16 {
+		return fmt.Errorf("merkle node %q: expected 16 children, got %d", id, len(remote.Children))
+	}
+	for i, child := range merkle.Children(id) {
+		if remote.Children[i] != local.Hash(child) {
+			if err := s.walk(addr, local, child); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)

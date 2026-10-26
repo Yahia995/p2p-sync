@@ -16,7 +16,7 @@ ARCHITECTURE.md and get filled in as phases are completed.
 | Tombstones | `scan`, `syncer.apply` | A delete is a new version with `deleted=true`, so it propagates and can be ordered against edits |
 | Content addressing / chunking | `internal/chunk`, `/block` | Chunks named by SHA-256; transfer only missing chunks; integrity check for free |
 | Anti-entropy | `syncer` loop | Periodic pull from a random peer repairs anything that push missed |
-| Merkle tree | `internal/merkle` | Compare whole indexes with one hash, then descend only into differing buckets |
+| Merkle tree | `internal/merkle`, `syncer.SyncMerkle` | Compare whole indexes with one hash, then descend only into differing buckets |
 | Epidemic / gossip dissemination | `membership` gossip, SWIM piggyback | Random peer selection spreads information in O(log n) rounds |
 | Failure detection | `internal/membership` (heartbeats), `internal/node` (sync only with alive peers) | Heartbeat timeouts first, then SWIM; failures can only be suspected, never known for sure |
 | SWIM | `membership` ping/ping-req | Constant per-node load, indirect probes reduce false positives, incarnation numbers refute rumors |
@@ -94,6 +94,17 @@ later chunks, so they all look new. Content-defined chunking (rolling hash) fixe
 **Why a fixed-shape Merkle tree?**
 Both nodes must put the same file in the same leaf. Bucketing by hash of the path gives that;
 a tree over the sorted list would shift on every insert.
+
+**What does the Merkle tree save?**
+Two nodes that agree exchange one small request per anti-entropy round (the root and its 16 child
+hashes) instead of the whole index. One changed file costs 3 requests. The tests count these.
+
+**What goes into a leaf hash, and why not mtime?**
+`path|version|deleted|hash` for each record in the bucket, sorted by path. mtime is local (it differs
+between nodes for the same content) and would make in-sync nodes look different forever. Leaving
+the version vector out would be a bug: two nodes with the same content but different vectors (for
+example after a resolution) would look in sync and never exchange the newer vector. A mutation test
+checks both.
 
 **How do you know it converges?**
 The randomized convergence test: random edits, partitions, delays, restarts, then heal and check

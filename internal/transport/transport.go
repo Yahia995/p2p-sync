@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"p2psync/internal/chunk"
+	"p2psync/internal/merkle"
 	"p2psync/internal/store"
 )
 
@@ -30,6 +31,7 @@ func NewHandler(st *store.Store, root string) *http.ServeMux {
 	mux.HandleFunc("GET /index", h.index)
 	mux.HandleFunc("GET /file", h.file)
 	mux.HandleFunc("GET /block", h.block)
+	mux.HandleFunc("GET /merkle", h.merkle)
 	return mux
 }
 
@@ -81,6 +83,20 @@ func (h *handler) block(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+func (h *handler) merkle(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("node")
+	if !merkle.ValidID(id) {
+		http.Error(w, "node must be empty, one or two lowercase hex digits", http.StatusBadRequest)
+		return
+	}
+	records, err := h.store.All()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, merkle.Build(records).Node(id))
+}
+
 func WriteJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(value)
@@ -106,6 +122,12 @@ func (c *Client) File(addr, path string) (FileInfo, error) {
 	var info FileInfo
 	err := c.getJSON(addr, "/file", url.Values{"path": {path}}, &info)
 	return info, err
+}
+
+func (c *Client) Merkle(addr, id string) (merkle.Node, error) {
+	var node merkle.Node
+	err := c.getJSON(addr, "/merkle", url.Values{"node": {id}}, &node)
+	return node, err
 }
 
 func (c *Client) Block(addr, hash string) ([]byte, error) {

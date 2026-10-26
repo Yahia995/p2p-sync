@@ -153,7 +153,7 @@ func (n *Node) antiEntropy(ctx context.Context, every time.Duration) {
 		if len(alive) == 0 {
 			continue
 		}
-		if err := n.Syncer.SyncWith(alive[rand.IntN(len(alive))]); err != nil {
+		if err := n.Syncer.SyncMerkle(alive[rand.IntN(len(alive))]); err != nil {
 			n.log.Println("sync:", err)
 		}
 	}

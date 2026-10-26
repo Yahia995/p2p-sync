@@ -60,8 +60,10 @@
 - [ ] Run scripts/netns.sh up/run/down on the main PC (needs sudo)
 
 ## Phase 8 — Merkle anti-entropy
-- [ ] Fixed 16x16 bucket tree, /merkle endpoint, walk
-- [ ] One request per round when in sync (test)
+- [x] Fixed 16x16 bucket tree, /merkle endpoint, walk
+- [x] One request per round when in sync, three for one changed file (tests)
+- [x] Node anti-entropy uses SyncMerkle; convergence test passes over Merkle (200 seeds)
+- [x] Mutation check: leaving the version out of the leaf, or not sorting a bucket, fails the tests
 
 ## Phase 9 — Push on change
 - [ ] /push, scanner pushes to alive members
