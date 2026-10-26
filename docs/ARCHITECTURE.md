@@ -78,8 +78,9 @@ merge(a, b):   result[id] = max(a[id], b[id])
 bump(a, self): copy of a with result[self] = a[self] + 1
 ```
 
-Canonical encoding: JSON object with keys sorted (Go's `encoding/json` sorts map keys). That makes
-the same vector always produce the same bytes, which the Merkle tree needs.
+Canonical encoding: JSON object with keys sorted (Go's `encoding/json` sorts map keys) and zero
+counters dropped, since a zero counter means the same as a missing one. That makes equal vectors
+always produce the same bytes, which the Merkle tree needs.
 
 ### 3.2 File record
 

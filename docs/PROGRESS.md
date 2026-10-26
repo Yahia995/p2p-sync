@@ -12,9 +12,9 @@
 - [x] `make build` and `make test` pass
 
 ## Phase 1 — Version vectors
-- [ ] Compare, Merge, Bump
-- [ ] Canonical encoding
-- [ ] Table tests and property tests pass
+- [x] Compare, Merge, Bump
+- [x] Canonical encoding (zero entries dropped, sorted keys)
+- [x] Table tests and property tests pass
 
 ## Phase 2 — Chunking
 - [ ] 128 KiB chunks, SHA-256 per chunk and per file
