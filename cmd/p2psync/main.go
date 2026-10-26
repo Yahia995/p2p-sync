@@ -4,14 +4,25 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"math/rand/v2"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"p2psync/internal/scan"
 	"p2psync/internal/store"
-	"p2psync/internal/vv"
+	"p2psync/internal/syncer"
+	"p2psync/internal/transport"
+)
+
+const (
+	rescanPeriod      = 10 * time.Second
+	antiEntropyPeriod = 5 * time.Second
+	requestTimeout    = 10 * time.Second
 )
 
 type config struct {
@@ -46,6 +57,15 @@ func parseFlags(args []string) (config, error) {
 	return cfg, nil
 }
 
+func every(period time.Duration, task func() error) {
+	for {
+		if err := task(); err != nil {
+			log.Println(err)
+		}
+		time.Sleep(period)
+	}
+}
+
 func run(cfg config) error {
 	if err := os.MkdirAll(filepath.Join(cfg.dir, scan.MetaDir), 0o755); err != nil {
 		return err
@@ -59,19 +79,27 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
-	scanner := &scan.Scanner{Root: cfg.dir, Store: st, Self: self, StableDelay: 500 * time.Millisecond}
-	if _, err := scanner.Rescan(); err != nil {
+
+	lock := &sync.Mutex{}
+	scanner := &scan.Scanner{Root: cfg.dir, Store: st, Self: self, Lock: lock, StableDelay: 500 * time.Millisecond}
+	engine := &syncer.Syncer{Root: cfg.dir, Store: st, Lock: lock, Client: transport.NewClient(requestTimeout)}
+	if err := engine.ResetTmp(); err != nil {
 		return err
 	}
-	records, err := st.All()
-	if err != nil {
+
+	go every(rescanPeriod, func() error {
+		_, err := scanner.Rescan()
 		return err
-	}
-	fmt.Println("node", self)
-	for _, rec := range records {
-		fmt.Printf("%s %s deleted=%v size=%d hash=%.8s\n", rec.Path, vv.Encode(rec.Version), rec.Deleted, rec.Size, rec.Hash)
-	}
-	return nil
+	})
+	go every(antiEntropyPeriod, func() error {
+		if len(cfg.peers) == 0 {
+			return nil
+		}
+		return engine.SyncWith(cfg.peers[rand.IntN(len(cfg.peers))])
+	})
+
+	log.Printf("node %s listening on %s, peers %v", self, cfg.listen, cfg.peers)
+	return http.ListenAndServe(cfg.listen, transport.NewHandler(st, cfg.dir))
 }
 
 func main() {

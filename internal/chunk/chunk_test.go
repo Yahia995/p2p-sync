@@ -127,3 +127,27 @@ func TestHashFile(t *testing.T) {
 		t.Error("expected error for missing file")
 	}
 }
+
+func TestReadBlock(t *testing.T) {
+	data := randomData(2*Size + 10)
+	path := filepath.Join(t.TempDir(), "file.bin")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, _, _ := HashFile(path)
+
+	got, err := ReadBlock(path, 2*Size, blocks[2].Size, blocks[2].Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data[2*Size:]) {
+		t.Error("wrong bytes for last block")
+	}
+
+	if _, err := ReadBlock(path, Size, blocks[1].Size, blocks[0].Hash); !errors.Is(err, ErrHashMismatch) {
+		t.Errorf("expected ErrHashMismatch, got %v", err)
+	}
+	if _, err := ReadBlock(path, 3*Size, Size, blocks[0].Hash); err == nil {
+		t.Error("expected error reading past end of file")
+	}
+}

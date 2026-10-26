@@ -160,7 +160,7 @@ fault filter can identify the sender.
 | POST | `/gossip` | `[]Member` | `[]Member` | Seed + gossip |
 | POST | `/ping` | `{"from":id,"updates":[]Member}` | `{"updates":[]Member}` | SWIM |
 | POST | `/ping-req` | `{"from":id,"target":id,"updates":[]Member}` | `{"ok":bool,"updates":[]Member}` | SWIM |
-| GET | `/status` | — | node state as JSON | Dashboard, CLI, tests |
+| GET | `/status` | — | node state as JSON | Dashboard, CLI, tests (added in Phase 7) |
 | POST | `/admin/faults` | `{"peer":id,"drop":bool,"delay_ms":int}` | 204 | Fault injection |
 | GET | `/` | — | HTML | Dashboard |
 
@@ -228,6 +228,13 @@ and on every newly created directory. Each event schedules a debounced rescan of
 (rescan of a single path uses the same logic as above). A full rescan still runs every 60 s
 to catch missed events and changes made while the node was down.
 
+Race with the sync engine: hashing happens outside the node lock. Before saving a new version,
+the scanner takes the lock and re-checks that the file still has the size and mtime it hashed. If
+the sync engine replaced the file in the meantime (the rename gives a new mtime), the scanner
+skips it. The same goes for tombstones: under the lock, the scanner re-checks that the file is still
+missing and that the record is not already deleted. Without this, a file just received from a peer
+could be recorded as a local edit of the old content.
+
 Echo suppression: when the sync engine writes a file received from a peer, it stores the record
 with the new hash and the post-rename mtime while holding the lock. When the watcher event for that
 write arrives, the scanner sees `size` and `mtime` equal to the record (or the same hash after
@@ -294,6 +301,12 @@ vectors without a conflict.
 
 `localBlock(hash)`: looks up `blocks_by_hash`, reads the bytes from the local file, and verifies the
 hash. This reuses unchanged chunks of a modified file.
+
+Paths from peers are checked before use: they must be local relative paths (no `..`, not absolute)
+and must not point into `.p2psync/`.
+
+Empty parent directories are left behind when a file is deleted, because directories are not synced
+(section 1).
 
 ### 7.3 Anti-entropy: full index exchange (first version)
 

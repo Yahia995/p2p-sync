@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"p2psync/internal/chunk"
@@ -18,6 +19,7 @@ type Scanner struct {
 	Root        string
 	Store       *store.Store
 	Self        string
+	Lock        *sync.Mutex
 	StableDelay time.Duration
 }
 
@@ -100,14 +102,7 @@ func (s *Scanner) changedFiles(onDisk map[string]fileState) (map[string]fileStat
 
 func (s *Scanner) indexFile(path string, before fileState) (bool, error) {
 	full := filepath.Join(s.Root, filepath.FromSlash(path))
-	info, err := os.Stat(full)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if info.Size() != before.size || info.ModTime().UnixNano() != before.mtime {
+	if !s.stillOnDisk(full, before) {
 		return false, nil
 	}
 	blocks, hash, err := chunk.HashFile(full)
@@ -116,6 +111,12 @@ func (s *Scanner) indexFile(path string, before fileState) (bool, error) {
 	}
 	if err != nil {
 		return false, err
+	}
+
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+	if !s.stillOnDisk(full, before) {
+		return false, nil
 	}
 	rec, found, err := s.Store.Get(path)
 	if err != nil {
@@ -134,6 +135,11 @@ func (s *Scanner) indexFile(path string, before fileState) (bool, error) {
 	return true, s.Store.Put(next, blocks)
 }
 
+func (s *Scanner) stillOnDisk(full string, before fileState) bool {
+	info, err := os.Stat(full)
+	return err == nil && info.Size() == before.size && info.ModTime().UnixNano() == before.mtime
+}
+
 func (s *Scanner) markDeleted(onDisk map[string]fileState) ([]string, error) {
 	records, err := s.Store.All()
 	if err != nil {
@@ -147,11 +153,26 @@ func (s *Scanner) markDeleted(onDisk map[string]fileState) ([]string, error) {
 		if _, exists := onDisk[rec.Path]; exists {
 			continue
 		}
-		tombstone := store.Record{Path: rec.Path, Version: vv.Bump(rec.Version, s.Self), Deleted: true}
-		if err := s.Store.Put(tombstone, nil); err != nil {
+		created, err := s.tombstone(rec.Path)
+		if err != nil {
 			return nil, err
 		}
-		deleted = append(deleted, rec.Path)
+		if created {
+			deleted = append(deleted, rec.Path)
+		}
 	}
 	return deleted, nil
+}
+
+func (s *Scanner) tombstone(path string) (bool, error) {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+	if _, err := os.Stat(filepath.Join(s.Root, filepath.FromSlash(path))); !errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	rec, found, err := s.Store.Get(path)
+	if err != nil || !found || rec.Deleted {
+		return false, err
+	}
+	return true, s.Store.Put(store.Record{Path: path, Version: vv.Bump(rec.Version, s.Self), Deleted: true}, nil)
 }

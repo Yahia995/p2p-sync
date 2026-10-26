@@ -89,7 +89,7 @@ Tests
 ## Phase 4 — Transport + full index exchange
 
 Deliverables
-- `internal/transport`: HTTP server with `/index`, `/file`, `/block`, `/status`; client with timeouts.
+- `internal/transport`: HTTP server with `/index`, `/file`, `/block`; client with timeouts. (`/status` moved to Phase 7.)
 - `internal/syncer`: `handleRemote` for `After` / `Before` / `Equal`, `apply` with temp file,
   hash verification, rename-before-commit, `localDiskUnchanged`, local chunk reuse.
 - Static peer list `--peers`, anti-entropy loop pulling `/index` from a random peer every 5 s.
@@ -142,6 +142,7 @@ Tests
 ## Phase 7 — Heartbeats, fault filter, convergence test
 
 Deliverables
+- `/status` endpoint (node ID, members, file count) used by tests to wait for convergence.
 - `internal/membership`: all-to-all heartbeats, alive/suspect/dead with timeouts; sync only with alive peers.
 - Transport fault filter (drop, delay per peer) and `POST /admin/faults`.
 - Randomized convergence test (TESTING.md section 3).

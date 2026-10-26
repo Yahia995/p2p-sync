@@ -26,10 +26,12 @@
 - [x] Store and scanner tests pass
 
 ## Phase 4 — Transport + full index exchange
-- [ ] /index, /file, /block, /status
-- [ ] apply: temp file, hash check, rename before commit, local chunk reuse
-- [ ] Anti-entropy loop with static peers
-- [ ] Two-node sync tests pass
+- [x] /index, /file, /block (/status moved to Phase 7, first phase that uses it)
+- [x] apply: temp file, hash check, rename before commit, local chunk reuse
+- [x] Shared node lock; scanner re-checks disk under the lock
+- [x] Anti-entropy loop with static peers (rescan every 10 s until Phase 6)
+- [x] Two-node sync tests pass
+- [x] Manual check: two processes on localhost converge (create, 1 MB file, delete)
 
 ## Phase 5 — Conflicts + tombstones
 - [ ] False conflict merge
@@ -43,6 +45,7 @@
 - [ ] No version bump on received files (test)
 
 ## Phase 7 — Failure detection + convergence
+- [ ] /status endpoint
 - [ ] All-to-all heartbeats, alive/suspect/dead
 - [ ] In-app fault filter and /admin/faults
 - [ ] scripts/netns.sh

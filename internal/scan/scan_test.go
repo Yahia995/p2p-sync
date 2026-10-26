@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func newScanner(t *testing.T) *Scanner {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return &Scanner{Root: root, Store: st, Self: "self"}
+	return &Scanner{Root: root, Store: st, Self: "self", Lock: &sync.Mutex{}}
 }
 
 func writeFile(t *testing.T, s *Scanner, path, content string) {

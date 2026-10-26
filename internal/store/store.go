@@ -36,12 +36,12 @@ CREATE INDEX IF NOT EXISTS blocks_by_hash ON blocks(hash);
 `
 
 type Record struct {
-	Path    string
-	Version vv.Vector
-	Deleted bool
-	Hash    string
-	Size    int64
-	MTime   int64
+	Path    string    `json:"path"`
+	Version vv.Vector `json:"version"`
+	Deleted bool      `json:"deleted"`
+	Hash    string    `json:"hash"`
+	Size    int64     `json:"size"`
+	MTime   int64     `json:"-"`
 }
 
 type Store struct {
