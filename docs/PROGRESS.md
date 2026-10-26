@@ -6,10 +6,10 @@
 - [ ] Old PC: distro installed, CPU arch checked (`uname -m`), Go binary runs
 
 ## Phase 0 — Scaffold
-- [ ] go.mod, directory layout
-- [ ] Makefile (build, test, race, vet, build-old, clean)
-- [ ] scripts/start-node.sh, scripts/firewall.sh
-- [ ] `make build` and `make test` pass
+- [x] go.mod, cmd/p2psync with flag parsing and tests
+- [x] Makefile (build, test, race, vet, build-old, clean)
+- [x] scripts/start-node.sh, scripts/firewall.sh
+- [x] `make build` and `make test` pass
 
 ## Phase 1 — Version vectors
 - [ ] Compare, Merge, Bump
