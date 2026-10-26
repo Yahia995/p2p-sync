@@ -34,10 +34,11 @@
 - [x] Manual check: two processes on localhost converge (create, 1 MB file, delete)
 
 ## Phase 5 — Conflicts + tombstones
-- [ ] False conflict merge
-- [ ] Deterministic winner, conflict naming, keep-both
-- [ ] Edit beats delete
-- [ ] Two-node and three-node conflict tests pass
+- [x] False conflict merge
+- [x] Deterministic winner, conflict naming, keep-both (copy before winner)
+- [x] Edit beats delete
+- [x] Two-node and three-node conflict tests pass
+- [x] Mutation check: tests fail if the winner rule, copy-first order, or no-increment rule is broken
 
 ## Phase 6 — Watcher + echo suppression
 - [ ] Recursive fsnotify watcher with debounce

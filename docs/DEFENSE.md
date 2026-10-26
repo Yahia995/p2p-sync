@@ -12,7 +12,7 @@ ARCHITECTURE.md and get filled in as phases are completed.
 | Causality and concurrency | `vv.Compare` | `After` = the other version is an ancestor; `Concurrent` = neither saw the other, so it is a conflict |
 | Conflict detection | `syncer.handleRemote` | Concurrent vectors and different content |
 | Deterministic conflict resolution | `syncer.winner`, `syncer.conflictName` | A total order on content (non-deleted first, then larger hash). It does not depend on arrival order, so all nodes pick the same winner |
-| Keep-both | `syncer.resolveConflict` | Loser saved as `name.conflict-<hash8>.ext`; no data loss |
+| Keep-both | `syncer.resolveConflict` (`internal/syncer/conflict.go`) | Loser saved as `name.conflict-<hash8>.ext`; no data loss |
 | Tombstones | `scan`, `syncer.apply` | A delete is a new version with `deleted=true`, so it propagates and can be ordered against edits |
 | Content addressing / chunking | `internal/chunk`, `/block` | Chunks named by SHA-256; transfer only missing chunks; integrity check for free |
 | Anti-entropy | `syncer` loop | Periodic pull from a random peer repairs anything that push missed |
@@ -48,9 +48,18 @@ the two versions so every node chooses the same one regardless of when it learns
 No, it is arbitrary but deterministic. Fairness does not matter because keep-both means nothing is lost.
 
 **Why does the merged winner not increment any counter?**
-If each node incremented its own counter while resolving, every node would produce a different
-vector and the resolutions would conflict with each other. Without an increment, all nodes produce
-the same record.
+Without an increment, every node that resolves the same conflict on its own produces exactly the
+same record (same vector, same content), so they agree immediately. With an increment, each
+resolver would produce a different vector. They would still converge, because those versions are
+concurrent with equal content and get merged as a false conflict, but each resolver would leave its
+ID in the vector and cost an extra sync round. This was checked by a mutation test: adding the
+increment makes `TestConcurrentEditsKeepBoth/both_resolve` fail on the "identical right after
+resolving" check, while the final convergence still holds.
+
+**What if the node crashes in the middle of resolving a conflict?**
+The loser's copy is written first and the winner second. A crash after the copy leaves the copy
+(harmless, it is the same record every node would create) and the next round installs the winner.
+A crash before the copy changes nothing.
 
 **Why keep tombstones forever?**
 To remove a tombstone safely you must know that every node has seen it, including offline nodes.

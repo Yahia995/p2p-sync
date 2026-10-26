@@ -141,6 +141,11 @@ func (s *Store) SetMTime(path string, mtime int64) error {
 	return err
 }
 
+func (s *Store) SetVersion(path string, version vv.Vector) error {
+	_, err := s.db.Exec("UPDATE files SET version = ? WHERE path = ?", vv.Encode(version), path)
+	return err
+}
+
 func (s *Store) Blocks(path string) ([]chunk.Block, error) {
 	rows, err := s.db.Query("SELECT hash, size FROM blocks WHERE path = ? ORDER BY idx", path)
 	if err != nil {

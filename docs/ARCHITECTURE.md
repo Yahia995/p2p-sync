@@ -393,15 +393,27 @@ resolveConflict(peer, l, r):
     install w at path with version = merged
 ```
 
-- `conflictName("dir/report.txt", h) = "dir/report.conflict-" + h[0:8] + ".txt"`.
+- `conflictName("dir/report.txt", h) = "dir/report.conflict-" + h[0:8] + ".txt"`. Only the last
+  extension is kept after the marker (`a.tar.gz` → `a.tar.conflict-xxxxxxxx.gz`). Names with no stem
+  (`.hidden`) or no extension get the marker appended (`.hidden.conflict-xxxxxxxx`).
 - The conflict copy record is `{path: copyPath, version: lose.version, hash: lose.hash, blocks:
   lose.blocks}`. Every node that resolves the same conflict creates byte-identical records, so
   the copies never conflict with each other.
-- The winning record gets `merge(l.version, r.version)` with **no** increment. Every node computes the
-  same vector and content, so they end up `Equal`. A real later edit increments a counter and
+- The winning record gets `merge(l.version, r.version)` with **no** increment. Every node that
+  resolves the same conflict on its own computes the same vector and content, so the results are
+  `Equal` immediately. If each resolver added its own counter, the results would still converge
+  (concurrent but equal content, so the false-conflict rule merges them), but every resolver would
+  add an entry to the vector and cost an extra round. A real later edit increments a counter and
   dominates the merged vector.
 - If the loser is the local version, its content is already on disk: it is copied to `copyPath`
   before the winner is written. If the loser is remote, its chunks are fetched like in `apply`.
+- Order matters: the copy is installed first, and the winner only if that succeeded. If the copy
+  step is skipped because the copy path changed locally, resolution stops and is retried in the
+  next round, so the local loser is never overwritten without being saved.
+- Every write (normal apply, delete, conflict copy, winner, version merge) checks under the node
+  lock that the local record and the disk are unchanged since the decision was made. If not, it
+  returns `errLocalChanged`; `SyncWith` treats that as "retry next round", not as a failure.
+- Records from peers are validated: a file needs a 64-char hex hash, a tombstone an empty one.
 - The conflict copy goes through the same merge rule as any remote record: if a record at
   `copyPath` already exists and is `Equal` or `After` (for example the user already deleted the
   copy on another node), nothing is created.

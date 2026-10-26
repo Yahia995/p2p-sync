@@ -141,3 +141,18 @@ func TestSetMTime(t *testing.T) {
 		t.Errorf("SetMTime changed more than mtime: %+v", got)
 	}
 }
+
+func TestSetVersion(t *testing.T) {
+	s, _ := openTemp(t)
+	s.Put(Record{Path: "a", Version: vv.Vector{"n1": 1}, Hash: "x", MTime: 5}, []chunk.Block{{Hash: "h", Size: 1}})
+	if err := s.SetVersion("a", vv.Vector{"n1": 1, "n2": 3}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.Get("a")
+	if got.Version["n2"] != 3 || got.Hash != "x" || got.MTime != 5 {
+		t.Errorf("SetVersion changed more than version: %+v", got)
+	}
+	if blocks, _ := s.Blocks("a"); len(blocks) != 1 {
+		t.Errorf("SetVersion dropped blocks: %v", blocks)
+	}
+}
