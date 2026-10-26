@@ -20,8 +20,8 @@ ARCHITECTURE.md and get filled in as phases are completed.
 | Merkle tree | `internal/merkle`, `syncer.SyncMerkle` | Compare whole indexes with one hash, then descend only into differing buckets |
 | Epidemic / gossip dissemination | `membership.gossip`, `membership.learn`, SWIM piggyback | Each second, swap member lists with 2 random alive members; information spreads in O(log n) rounds |
 | Bootstrapping without a leader | `membership.joinIfAlone`, `members` table | The seed is only a first contact; members are persisted so a restart does not need it |
-| Failure detection | `internal/membership` (heartbeats), `internal/node` (sync only with alive peers) | Heartbeat timeouts first, then SWIM; failures can only be suspected, never known for sure |
-| SWIM | `membership` ping/ping-req | Constant per-node load, indirect probes reduce false positives, incarnation numbers refute rumors |
+| Failure detection | `membership.probe`, `internal/node` (sync only with alive peers) | All-to-all heartbeats until Phase 10, SWIM since Phase 11; failures can only be suspected, never known for sure |
+| SWIM | `membership.probe`, `indirectPing`, `learn`, `refute`, `piggyback` | Constant per-node load, indirect probes reduce false positives, incarnation numbers refute rumors |
 | Idempotence | `handleRemote` | Same record twice → `Equal` → no-op; makes retries and duplicates safe |
 | Eventual consistency | `internal/node/convergence_test.go` | No guarantee about when, only that nodes agree once updates stop and the network heals |
 | Atomic local updates | `syncer.apply` | Temp file + hash check + rename, then commit; crash between steps is handled by the false-conflict rule |
@@ -134,15 +134,31 @@ again, and the seed is an ordinary member. A node that restarts uses the members
 SQLite, so the seed can be down (tested: the seed and a node are stopped, the node restarts and
 is back in about 1 s).
 
-**Why does a gossiped member start as dead?**
-Hearing "C exists" from B says nothing about whether I can reach C. Only a heartbeat from C itself
-makes it alive. That way a node never syncs with a peer just because someone else said it exists.
+**Why SWIM instead of heartbeats?**
+Heartbeats cost O(n²) messages per period and one bad link is enough to suspect a node. SWIM
+probes one member per period, so the cost per node stays constant (measured: 3.0 messages per node
+per period with 3 and with 8 nodes). Indirect probes through 3 other members check whether the node
+is down or only the link is bad.
 
-**Why no incarnation numbers yet?**
-They exist to settle conflicting rumors about liveness ("C is suspect" vs "C is alive"). In Phase 10
-each node decides liveness from its own heartbeat timers and ignores rumors, so there is nothing to
-settle. They come with SWIM (Phase 11), where nodes act on rumors and a falsely suspected node must
-be able to refute them.
+**What is an incarnation number for?**
+It orders rumors about one node. Only that node can increase it, and only to deny a rumor about
+itself. So "alive@4" beats "suspect@3": the node said it was alive after someone suspected it. At
+the same incarnation, the worse state wins, because the suspicion was raised after seeing that alive.
+
+**Can a slow node be declared dead by mistake?**
+It is first only suspect, for 5 s. The suspicion is piggybacked on pings, including the pings sent
+to the suspect itself, which then refutes with a higher incarnation. It is declared dead only if
+no refutation arrives in time. Even a wrong `dead` costs little: syncing with that node pauses, and
+it comes back on the next gossip exchange.
+
+**How does a partition heal if nobody probes dead members?**
+Each period a node also exchanges gossip with one random dead member. Once the link works again,
+the dead member reads "you are dead" in the view, refutes, and its answer brings it back.
+A mutation test that removes this exchange makes the partition-heal test fail.
+
+**What is the cost of a wrong decision in this system?**
+Nothing for correctness: membership only chooses who to sync with. Data correctness comes from
+version vectors and anti-entropy.
 
 **Why HTTP/JSON?**
 Standard library only, easy to inspect with `curl`, and the payloads are small except chunks,

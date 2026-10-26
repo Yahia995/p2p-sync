@@ -20,14 +20,14 @@ CONVERGENCE_FIRST_SEED=2 CONVERGENCE_SEEDS=1 go test ./internal/node -run Conver
 | `internal/scan` | New / unchanged / same-content rewrite / modify / delete / re-create, nested dirs, `.p2psync/` ignored, stability check |
 | `internal/syncer` | `winner` order independence, `conflictName`, false conflict, edit beats delete, apply aborts when local file changed |
 | `internal/merkle` | Root independent of insertion order, one change touches one path in the tree |
-| `internal/membership` | Heartbeat timeouts, unknown heartbeat ignored, gossip learn rules (unknown added as dead, missing ID filled, local state kept, self skipped), members reloaded as dead; SWIM suspicion and refutation (Phase 11) |
+| `internal/membership` | Merge rules (higher incarnation, same incarnation worse state, better or older ignored), unknown taken as reported, ID filled only if missing, invalid updates ignored, refutation, suspicion expiry, piggyback limits (6 per message, least-sent first, `3 * bits.Len(n+1)` sends), round-robin skips dead, members reloaded as alive |
 
 Random property tests use `math/rand/v2` with a fixed seed printed on failure.
 
 ## 2. Integration tests (in-process nodes)
 
 Tests start several nodes in one process, each with its own `t.TempDir()` folder and an
-`httptest`-style listener on `127.0.0.1:0`. Timers (anti-entropy period, heartbeat timeouts) are
+`httptest`-style listener on `127.0.0.1:0`. Timers (anti-entropy period, SWIM period and timeouts) are
 shortened through the node's config struct so tests run in seconds.
 
 Waiting: tests poll `/status` (or the store directly) until a condition holds or a deadline
@@ -43,6 +43,10 @@ Scenarios:
 - Partition and heal with membership (dead → alive).
 - Five nodes started with only `-seed` discover each other; a restarted node rejoins from its stored
   members with the seed down.
+- SWIM: A-C link cut, C stays alive through ping-req via B and never has to refute; a stopped
+  node is marked dead by all 4 others (about 0.4 s with test timers); a false suspicion injected
+  through `/gossip` is refuted and every node sees the higher incarnation; messages per node per
+  period are about 3.0 with both 3 and 8 nodes.
 
 ## 3. Randomized convergence test
 
@@ -78,7 +82,7 @@ A small path set (10 paths) is chosen on purpose: it forces many concurrent edit
 Typical runs end with 6-16 conflict copies per seed. Writes to a stopped node's folder are offline
 edits, which the node picks up when it restarts.
 
-Timers are scaled down (heartbeat 50 ms, suspect 200 ms, dead 500 ms, anti-entropy 50 ms), so one
+Timers are scaled down (SWIM period 50 ms, ping timeout 25 ms, suspicion 300 ms, anti-entropy 50 ms), so one
 seed takes about 2-3 s. `make test` runs 10 seeds (`CONVERGENCE_SEEDS` raises it; 200 seeds are run
 before each phase is closed). `CONVERGENCE_FIRST_SEED` replays one seed. A seed reproduces the
 sequence of actions, not the exact goroutine interleaving, so a rare failure may need `-count=20`

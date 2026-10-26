@@ -45,9 +45,9 @@ func fastConfig(s *slot, listen string, peers []string) Config {
 	cfg.Debounce = 20 * time.Millisecond
 	cfg.RescanEvery = 500 * time.Millisecond
 	cfg.AntiEntropyEvery = 50 * time.Millisecond
-	cfg.HeartbeatEvery = 50 * time.Millisecond
-	cfg.SuspectAfter = 200 * time.Millisecond
-	cfg.DeadAfter = 500 * time.Millisecond
+	cfg.ProbeEvery = 50 * time.Millisecond
+	cfg.PingTimeout = 25 * time.Millisecond
+	cfg.SuspectTimeout = 300 * time.Millisecond
 	cfg.RequestTimeout = 2 * time.Second
 	return cfg
 }

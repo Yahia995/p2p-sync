@@ -82,9 +82,12 @@
 - [x] Manual check: discovery in about 1 s, restarted node rejoins in about 1 s with the seed down
 
 ## Phase 11 — SWIM
-- [ ] ping, ping-req, suspicion, refutation, piggyback dissemination
-- [ ] Incarnation in members and messages, incarnation merge rule
-- [ ] Indirect ping and refutation tests pass
+- [x] ping, ping-req, suspicion, refutation, piggyback dissemination; heartbeats removed
+- [x] Incarnation in members and messages, incarnation merge rule
+- [x] Gossip also goes to one dead member per period, so healed partitions reconnect
+- [x] Indirect ping, death detection, refutation and per-node cost tests pass
+- [x] Mutation checks: no ping-req, no refutation, no gossip to dead each fail a test
+- [x] Manual check: link cut 8 s without suspicion; killed node suspect 2.6 s, dead 7.5 s; restart alive in 50 ms
 
 ## Phase 12 — Dashboard
 - [ ] Status page with members, index, conflicts, events

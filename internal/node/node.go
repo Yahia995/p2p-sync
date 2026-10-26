@@ -33,9 +33,9 @@ type Config struct {
 	Debounce         time.Duration
 	RescanEvery      time.Duration
 	AntiEntropyEvery time.Duration
-	HeartbeatEvery   time.Duration
-	SuspectAfter     time.Duration
-	DeadAfter        time.Duration
+	ProbeEvery       time.Duration
+	PingTimeout      time.Duration
+	SuspectTimeout   time.Duration
 	RequestTimeout   time.Duration
 }
 
@@ -45,9 +45,9 @@ func Defaults() Config {
 		Debounce:         200 * time.Millisecond,
 		RescanEvery:      60 * time.Second,
 		AntiEntropyEvery: 5 * time.Second,
-		HeartbeatEvery:   time.Second,
-		SuspectAfter:     3 * time.Second,
-		DeadAfter:        10 * time.Second,
+		ProbeEvery:       time.Second,
+		PingTimeout:      300 * time.Millisecond,
+		SuspectTimeout:   5 * time.Second,
 		RequestTimeout:   10 * time.Second,
 	}
 }
@@ -74,12 +74,14 @@ type pushMessage struct {
 }
 
 type status struct {
-	ID             string                    `json:"id"`
-	Addr           string                    `json:"addr"`
-	Files          int                       `json:"files"`
-	Members        []membership.Member       `json:"members"`
-	Faults         map[string]transport.Rule `json:"faults"`
-	PushesReceived int64                     `json:"pushes_received"`
+	ID                 string                    `json:"id"`
+	Addr               string                    `json:"addr"`
+	Incarnation        uint64                    `json:"incarnation"`
+	Files              int                       `json:"files"`
+	Members            []membership.Member       `json:"members"`
+	Faults             map[string]transport.Rule `json:"faults"`
+	PushesReceived     int64                     `json:"pushes_received"`
+	MembershipMessages int64                     `json:"membership_messages"`
 }
 
 func Start(cfg Config) (*Node, error) {
@@ -120,8 +122,9 @@ func Start(cfg Config) (*Node, error) {
 		st.Close()
 		return nil, err
 	}
-	heartbeatClient := transport.NewClient(n.Addr, cfg.HeartbeatEvery, n.Faults)
-	n.Members, err = membership.New(id, n.Addr, cfg.Seed, st, heartbeatClient, cfg.SuspectAfter, cfg.DeadAfter)
+	pingClient := transport.NewClient(n.Addr, cfg.PingTimeout, n.Faults)
+	membershipClient := transport.NewClient(n.Addr, cfg.ProbeEvery, n.Faults)
+	n.Members, err = membership.New(id, n.Addr, cfg.Seed, st, pingClient, membershipClient, cfg.SuspectTimeout)
 	if err != nil {
 		listener.Close()
 		st.Close()
@@ -132,7 +135,8 @@ func Start(cfg Config) (*Node, error) {
 	}
 
 	mux := transport.NewHandler(st, cfg.Dir)
-	mux.HandleFunc("POST /heartbeat", n.Members.HandleHeartbeat)
+	mux.HandleFunc("POST /ping", n.Members.HandlePing)
+	mux.HandleFunc("POST /ping-req", n.Members.HandlePingReq)
 	mux.HandleFunc("POST /join", n.Members.HandleJoin)
 	mux.HandleFunc("POST /gossip", n.Members.HandleGossip)
 	mux.HandleFunc("POST /push", n.handlePush)
@@ -148,7 +152,7 @@ func Start(cfg Config) (*Node, error) {
 			n.log.Println("watcher:", err)
 		}
 	})
-	n.background(func() { n.Members.Run(ctx, cfg.HeartbeatEvery) })
+	n.background(func() { n.Members.Run(ctx, cfg.ProbeEvery) })
 	n.background(func() { n.antiEntropy(ctx, cfg.AntiEntropyEvery) })
 	return n, nil
 }
@@ -221,12 +225,14 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	transport.WriteJSON(w, status{
-		ID:             n.ID,
-		Addr:           n.Addr,
-		Files:          len(records),
-		Members:        n.Members.Members(),
-		Faults:         n.Faults.Rules(),
-		PushesReceived: n.pushesReceived.Load(),
+		ID:                 n.ID,
+		Addr:               n.Addr,
+		Incarnation:        n.Members.Incarnation(),
+		Files:              len(records),
+		Members:            n.Members.Members(),
+		Faults:             n.Faults.Rules(),
+		PushesReceived:     n.pushesReceived.Load(),
+		MembershipMessages: n.Members.MessagesSent(),
 	})
 }
 

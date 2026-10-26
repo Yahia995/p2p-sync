@@ -47,7 +47,7 @@ exchanging metadata (version vectors) and pulling missing content (chunks).
 | Sync engine | `internal/syncer` | Merge rule for remote records, conflict resolution, fetching chunks, applying files to disk |
 | Merkle tree | `internal/merkle` | Bucket hashes over the index for anti-entropy |
 | Transport | `internal/transport` | HTTP server and client, JSON messages, in-app fault filter |
-| Membership | `internal/membership` | Static peers, heartbeats, seed + gossip, SWIM |
+| Membership | `internal/membership` | Static peers, seed + gossip, SWIM (ping, ping-req, suspicion, incarnation, piggyback) |
 | Dashboard | `internal/dashboard` | Read-only HTML status page |
 | Node wiring | `internal/node` | `Start(cfg)` / `Stop()`: opens the store, starts HTTP server, watcher, membership, anti-entropy; serves `/status`. Used by `main` and by the cluster tests |
 | CLI | `cmd/p2psync` | Flags, `node.Start`, stop on Ctrl-C |
@@ -140,14 +140,14 @@ CREATE TABLE members (
 | `files.version` | Canonical JSON of the version vector |
 | `files.mtime` | Local only, used by the scanner |
 | `blocks` | Chunk list of the current version of each file. `blocks_by_hash` lets the node serve a chunk by hash and reuse local chunks when building a new file. A chunk's byte offset is `idx * 128 KiB` because all chunks except the last have the same size |
-| `members` | Every member this node has learned about (address, and node ID once known), so a restarted node can rejoin without the seed. Keyed by address like the rest of membership (section 5). State is not stored: after a restart every member starts `dead` until heard again. Incarnation is added in Phase 11 with SWIM |
+| `members` | Every member this node has learned about (address, and node ID once known), so a restarted node can rejoin without the seed. Keyed by address like the rest of membership (section 5). State and incarnation are not stored: after a restart every stored member starts `alive` at incarnation 0, and any newer rumor or a failed probe corrects it (9.2) |
 
 ## 5. Messages (HTTP + JSON)
 
 All endpoints are on the node's listen address. Every request carries header `X-Node-Addr` (the
 sender's advertised address) so the fault filter can identify the sender. Peers are identified by
 advertised address rather than node ID because static peers are configured by address, so a rule
-works before the first heartbeat, and the demo `curl` commands take an address. Node IDs still
+works before the first message, and the demo `curl` commands take an address. Node IDs still
 appear in `/status`.
 
 | Method | Path | Request | Response | Used by |
@@ -157,11 +157,10 @@ appear in `/status`.
 | GET | `/block?hash=H` | — | raw bytes | Chunk transfer |
 | GET | `/merkle?node=X` | — | `{"node":X,"hash":..,"children":[16 hashes]}` for `X` = `""` or one hex digit, `{"node":X,"hash":..,"records":[]Record}` for two hex digits | Merkle anti-entropy |
 | POST | `/push` | `{"from":addr,"records":[]Record}` (no blocks) | 204 after applying | Push on change |
-| POST | `/heartbeat` | `{"from":id,"addr":..}` | 204 | All-to-all heartbeats |
 | POST | `/join` | `Member` (the joiner) | `[]Member` (the seed's view, itself first) | Seed + gossip |
 | POST | `/gossip` | `[]Member` (sender's view, itself first) | `[]Member` (receiver's view) | Seed + gossip |
-| POST | `/ping` | `{"from":id,"updates":[]Member}` | `{"updates":[]Member}` | SWIM |
-| POST | `/ping-req` | `{"from":id,"target":id,"updates":[]Member}` | `{"ok":bool,"updates":[]Member}` | SWIM |
+| POST | `/ping` | `{"updates":[]Member}` | `{"updates":[]Member}` (the ack) | SWIM |
+| POST | `/ping-req` | `{"target":addr,"updates":[]Member}` | `{"ok":bool,"updates":[]Member}` after pinging the target | SWIM |
 | GET | `/status` | — | node state as JSON | Dashboard, CLI, tests (added in Phase 7) |
 | POST | `/admin/faults` | `{"peer":id,"drop":bool,"delay_ms":int}` | 204 | Fault injection |
 | GET | `/` | — | HTML | Dashboard |
@@ -183,14 +182,15 @@ Example record:
 }
 ```
 
-Member (Phase 10; SWIM adds `incarnation` in Phase 11):
+Member:
 
 ```json
-{"addr": "192.168.1.20:7001", "id": "3f9a...", "state": "alive"}
+{"addr": "192.168.1.20:7001", "id": "3f9a...", "incarnation": 3, "state": "alive"}
 ```
 
-In `/status` a member also has `last_heard` once it has been heard. The receiver of `/join` or
-`/gossip` only uses `addr` and `id`; the sender's `state` is informational.
+Pings carry no sender field: the receiver does not need it, and the fault filter already reads
+`X-Node-Addr`. `/status` also shows the node's own `incarnation` and `membership_messages` (join,
+ping, ping-req and gossip requests sent).
 
 `--advertise` sets the address a node announces. It is needed because the listen address
 (`0.0.0.0:7001`) is not reachable by others.
@@ -492,87 +492,89 @@ the content, so using only the hash keeps the name deterministic.
 
 ## 9. Membership and failure detection
 
-Member states: `alive`, `suspect`, `dead`. Sync and push only target `alive` members.
+Member states: `alive`, `suspect`, `dead`. Sync and push only target `alive` members. Each member
+also has an incarnation number that only the member itself can increase. Membership lives in
+`internal/membership`.
 
-### 9.1 Static peers + all-to-all heartbeats (first version)
+### 9.1 Static peers + all-to-all heartbeats (Phases 7-10, replaced by SWIM)
 
-```
-every 1 s: send POST /heartbeat to every known member (also dead ones, so they can come back)
-on heartbeat from p: if p is known: lastHeard[p] = now; state[p] = alive
-every 1 s: for p:
-    if now - lastHeard[p] < 3 s:  state[p] = alive
-    else if < 10 s:               state[p] = suspect
-    else:                         state[p] = dead
-```
-
-Heartbeats only refresh members that are already known. Since Phase 10 the member list only grows
-through `-peers`, `/join` and `/gossip` (9.2). Before Phase 10, unknown senders were added; that was
-removed so the discovery test really depends on gossip (with gossip disabled it fails).
-
-A peer that has never been heard from starts as `dead`. Only incoming heartbeats count as hearing
-a peer, not successful outgoing ones. With a one-way cut (A can reach B but B cannot reach A), B
-sees A alive and A sees B dead. That asymmetry is what you would observe in a real network, and it
-is visible on `/status`. Membership lives in `internal/membership`.
-
-Message cost: O(n²) per second. Fine for under 10 nodes, and the reason to move to SWIM.
+Every node sent `POST /heartbeat` to every other node each second; a peer was `suspect` after 3 s
+of silence and `dead` after 10 s. Simple, but O(n²) messages per second, and one slow link was
+enough to suspect a node. Removed in Phase 11. The measured comparison is in 9.3.
 
 ### 9.2 Seed + gossip discovery
 
-Gossip spreads who exists. It does not decide who is alive: until SWIM (Phase 11), liveness comes
-only from direct heartbeats (9.1).
-
 ```
-each heartbeat period (1 s), before heartbeats:
-    if the member list is empty and a seed is set: POST /join {addr, id} to the seed, learn the answer
-after heartbeats:
-    pick 2 random alive members, POST /gossip with my view, learn the answer
+each protocol period (1 s):
+    if the member list is empty and a seed is set: POST /join {my entry} to the seed, learn the answer
+    ... SWIM probe (9.3) ...
+    POST /gossip with my view to 2 random alive members and 1 random dead member, learn each answer
 on /join from m:  learn([m]),  answer with my view
 on /gossip(list): learn(list), answer with my view
-view = [me (alive)] + every member I know
-learn(list):
-    for m in list, skipping my own address:
-        if m.addr unknown:            add {addr, id} as dead, save to the members table
-        else if my entry has no id:   take m.id, save
-        else:                         ignore (the rumor never changes local state)
+view = [my entry (alive, my incarnation)] + every member I know
 ```
 
-- **Unknown members start `dead`**, like static peers. A rumor that a node exists is not evidence
-  that it is reachable from here. It becomes `alive` when its first heartbeat arrives (within one
-  period, because it learns about us through the same gossip).
 - **An exchange works both ways.** The answer to `/gossip` is the receiver's view, so both sides
-  learn in one request. Including yourself first in the view is how others learn about you.
+  learn in one request. Putting yourself first in the view is how others learn about you.
 - **Fanout 2, every second.** Information reaches all n nodes in about log(n) rounds. Measured on
   localhost: two nodes started with only `-seed` see the seed and each other alive in about 1 s.
+- **One dead member per period.** SWIM never probes dead members, so without this two sides of a
+  healed partition would never talk again. The dead member receives a view that says it is dead,
+  refutes (9.3), and its answer carries its new incarnation, so it is alive again in one exchange.
+  With this exchange disabled, the partition-heal test fails.
 - **The seed is only a first contact.** A node joins only while its member list is empty, and
   retries every period while the seed is down. After that the seed is an ordinary member.
-- **Rejoin without the seed.** Members are saved in the `members` table. A restarted node loads them
-  as `dead` and sends heartbeats to all of them (9.1 sends to dead members too). The peers still
-  know it, so they mark it alive and answer, and it is back in about one period, even with the seed
-  down (tested, and checked by hand with real processes).
-- **Node IDs.** Gossip only fills in a missing ID. A heartbeat is direct evidence, so the ID in a
-  heartbeat always wins.
-
-No incarnation yet. With heartbeats deciding liveness, a gossiped state would be overwritten by
-the local timers every second, so merging states by incarnation would be code with no effect.
-Incarnations, and the rule "higher incarnation wins, same incarnation worse state wins", come with
-SWIM in Phase 11, when rumors about liveness actually matter.
+- **Rejoin without the seed.** Members (address and ID) are saved in the `members` table. A restarted
+  node loads them as `alive` at incarnation 0 and probes and gossips with them as usual. Others
+  still list it as `dead@k`, tell it so, and it refutes with `k+1` (measured: alive again 50 ms
+  after restart). Unreachable stored members fail their probes and become dead.
 
 ### 9.3 SWIM (replaces 9.1)
 
 ```
-every 1 s (protocol period):
-    target = next member in a shuffled round-robin list
-    if ping(target) answers within 300 ms: alive
-    else:
-        ask k = 3 other members: ping-req(target)
-        if any reports ok before the period ends: alive
-        else: mark target suspect, disseminate
-suspect for longer than 5 s: mark dead, disseminate
-a node that hears it is suspected: incarnation += 1, disseminate alive
+every protocol period (1 s):
+    target = next member of a shuffled list of non-dead members (reshuffled after each full round)
+    ping(target), wait 300 ms for the ack
+    if no ack: ask 3 random alive members to ping-req(target); each pings target and reports ok
+    if nobody reports ok within one period: mark target suspect (same incarnation)
+every period: a member suspect for 5 s or more becomes dead (same incarnation)
+
+learn(update):                                  for every update in a ping, ack, view or join
+    if it is about me and says suspect or dead with incarnation >= mine:
+        my incarnation = its incarnation + 1     (refutation), disseminate my entry
+    else if unknown: add it as reported
+    else if update.incarnation > known.incarnation: take it
+    else if same incarnation and update.state worse (alive < suspect < dead): take it
+    an ID is only filled in if missing
+every change to an entry is disseminated
 ```
 
-Dissemination: each ping and ack carries up to 6 recent membership updates (piggybacking), each
-sent about `3 * log(n)` times. Message cost per node per period is constant, independent of `n`.
+- **Indirect probes.** A failed direct ping may only mean the link between two nodes is bad. With
+  the A-C link cut, A still gets C's ack through B, so C is never suspected (test: C's incarnation
+  stays 0 for 2 s; with ping-req removed it has to refute 14-17 times in that time).
+- **Suspicion before death.** A suspect node is still in the list and has 5 s to refute. A node is
+  only declared dead after both direct and indirect probes failed and nobody heard a refutation.
+- **Incarnation.** Only the member itself increases it, and only to deny a rumor about itself. So a
+  higher incarnation always means newer information about that node. At the same incarnation the
+  worse state wins, because "suspect@3" was decided after seeing "alive@3".
+- **Refutation travels with the rumor.** The suspicion is piggybacked on the next pings, including
+  the ones to the suspect itself. It refutes in its ack, and the new `alive@k+1` spreads the same way.
+- **Piggybacking.** Each changed entry is put in a queue. Every ping, ack, ping-req and ping-req ack
+  carries up to 6 entries, least-sent first, and an entry is dropped from the queue after
+  `3 * bits.Len(n+1)` sends (about 3·log₂ n). The values are taken from the current list when sent,
+  so an entry always carries its latest state.
+- **A direct ack does not clear suspicion by itself.** Only the suspect's refutation (a higher
+  incarnation) does. Otherwise different nodes could disagree forever about the same incarnation.
+- **Own incarnation is not stored.** A restarted node starts at 0. That is safe: any rumor about it
+  at a higher incarnation that says suspect or dead makes it jump past that number.
+
+Measured cost (`TestMembershipCostConstantPerNode`, 50 ms period): about 3.0 messages per node per
+period with 3 nodes and with 8 nodes (1 ping + 2 gossip; ping-req and gossip to dead only on
+failures). All-to-all heartbeats would be 2 and 7. The size of a gossip view still grows with n.
+
+Detection with default timers, measured with real processes: a killed node is suspect after about
+2.6 s (until someone probes it, plus 300 ms + one period for the indirect probe) and dead after about
+7.5 s (plus 5 s suspicion).
 
 ## 10. Failure scenarios
 

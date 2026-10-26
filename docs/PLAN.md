@@ -212,8 +212,10 @@ Tests
 Deliverables
 - `/ping`, `/ping-req`, round-robin probing, suspicion timeout, incarnation refutation,
   piggybacked dissemination. Replaces all-to-all heartbeats.
-- Incarnation per member (in messages and the `members` table) and the merge rule: higher
+- Incarnation per member (in messages, not in the `members` table) and the merge rule: higher
   incarnation wins, same incarnation worse state wins (alive < suspect < dead).
+- Gossip also sends to one dead member per period, so a healed partition reconnects (SWIM does not
+  probe dead members).
 
 Acceptance
 - Dead node detected by all members; a slow-but-alive node refutes suspicion and is not declared dead.
