@@ -71,7 +71,11 @@ func (s *Scanner) watchTree(w *fsnotify.Watcher, dir string) error {
 }
 
 func (s *Scanner) rescanAndLog() {
-	if _, err := s.Rescan(); err != nil {
+	changed, err := s.Rescan()
+	if err != nil {
 		log.Println("rescan:", err)
+	}
+	if len(changed) > 0 && s.OnChange != nil {
+		s.OnChange(changed)
 	}
 }

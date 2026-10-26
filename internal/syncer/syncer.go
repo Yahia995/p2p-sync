@@ -50,6 +50,10 @@ func (s *Syncer) SyncWith(addr string) error {
 	if err != nil {
 		return err
 	}
+	return s.ApplyRecords(addr, records)
+}
+
+func (s *Syncer) ApplyRecords(addr string, records []store.Record) error {
 	var errs []error
 	for _, r := range records {
 		if err := s.handleRemote(addr, r); err != nil && !errors.Is(err, errLocalChanged) {
@@ -75,18 +79,13 @@ func (s *Syncer) walk(addr string, local *merkle.Tree, id string) error {
 	if remote.Hash == local.Hash(id) {
 		return nil
 	}
-	var errs []error
 	if merkle.IsLeaf(id) {
-		for _, r := range remote.Records {
-			if err := s.handleRemote(addr, r); err != nil && !errors.Is(err, errLocalChanged) {
-				errs = append(errs, fmt.Errorf("%s: %w", r.Path, err))
-			}
-		}
-		return errors.Join(errs...)
+		return s.ApplyRecords(addr, remote.Records)
 	}
 	if len(remote.Children) != 16 {
 		return fmt.Errorf("merkle node %q: expected 16 children, got %d", id, len(remote.Children))
 	}
+	var errs []error
 	for i, child := range merkle.Children(id) {
 		if remote.Children[i] != local.Hash(child) {
 			if err := s.walk(addr, local, child); err != nil {

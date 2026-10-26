@@ -158,7 +158,7 @@ appear in `/status`.
 | GET | `/file?path=P` | — | `Record` with `blocks` | Before downloading |
 | GET | `/block?hash=H` | — | raw bytes | Chunk transfer |
 | GET | `/merkle?node=X` | — | `{"node":X,"hash":..,"children":[16 hashes]}` for `X` = `""` or one hex digit, `{"node":X,"hash":..,"records":[]Record}` for two hex digits | Merkle anti-entropy |
-| POST | `/push` | `{"from":id,"records":[]Record}` | 204 | Push on change |
+| POST | `/push` | `{"from":addr,"records":[]Record}` (no blocks) | 204 after applying | Push on change |
 | POST | `/heartbeat` | `{"from":id,"addr":..}` | 204 | All-to-all heartbeats |
 | POST | `/join` | `Member` | `[]Member` | Seed + gossip |
 | POST | `/gossip` | `[]Member` | `[]Member` | Seed + gossip |
@@ -388,11 +388,22 @@ uses `SyncMerkle`, so the randomized convergence test exercises the Merkle path.
 
 ### 7.5 Push on change
 
-After the scanner creates new local versions, the node sends `POST /push` with those records to
-every alive member. The receiver runs `handleRemote(sender, r)` for each one in a goroutine.
-Push only lowers latency; if a push is lost, anti-entropy still delivers the change. Received
-remote changes are not re-pushed, so there is no flooding; other nodes get them from anti-entropy
-or from their own pull.
+After a rescan creates new local versions, the watcher calls `Scanner.OnChange(paths)`. The node
+loads those records and sends `POST /push` to every alive member, one goroutine per member, without
+waiting for an answer. The receiver runs `Syncer.ApplyRecords(sender, records)`, the same code path
+as anti-entropy, so conflicts and tombstones behave identically. It fetches blocks from the sender
+and answers 204 when done. Applying before answering means `Node.Stop` (which uses
+`http.Server.Shutdown`) waits for pushes in progress instead of closing the store under them.
+
+Only local edits are pushed. A received record never passes through `OnChange`, because the
+scanner does not treat received files as edits (echo suppression, section 6). So there is no
+flooding: each change costs one push per alive member. Nodes that were not reached (dead, cut off,
+push dropped) get the change from Merkle anti-entropy. A mutation test shows what forwarding would
+do: with receivers re-pushing, 3 nodes exchanged about 850 pushes each in under a second for a
+single file.
+
+Measured on localhost with default timers: a new file reaches the other node in about 720 ms
+(200 ms debounce + 500 ms stability check + transfer), instead of up to 5 s with anti-entropy alone.
 
 ## 8. Conflict rules
 

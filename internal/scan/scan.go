@@ -21,6 +21,7 @@ type Scanner struct {
 	Self        string
 	Lock        *sync.Mutex
 	StableDelay time.Duration
+	OnChange    func(paths []string)
 }
 
 type fileState struct {

@@ -66,8 +66,11 @@
 - [x] Mutation check: leaving the version out of the leaf, or not sorting a bucket, fails the tests
 
 ## Phase 9 — Push on change
-- [ ] /push, scanner pushes to alive members
-- [ ] No re-push of received records (test)
+- [x] /push, scanner pushes local changes to alive members (Scanner.OnChange)
+- [x] No re-push of received records (test + mutation check)
+- [x] Lost push repaired by anti-entropy (test)
+- [x] Node.Stop uses graceful Shutdown so pushes in progress finish
+- [x] Manual check: change reaches the other node in about 720 ms with default timers
 
 ## Phase 10 — Seed + gossip
 - [ ] /join, /gossip, incarnation merge, members persisted

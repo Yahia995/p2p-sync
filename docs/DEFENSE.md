@@ -15,7 +15,8 @@ ARCHITECTURE.md and get filled in as phases are completed.
 | Keep-both | `syncer.resolveConflict` (`internal/syncer/conflict.go`) | Loser saved as `name.conflict-<hash8>.ext`; no data loss |
 | Tombstones | `scan`, `syncer.apply` | A delete is a new version with `deleted=true`, so it propagates and can be ordered against edits |
 | Content addressing / chunking | `internal/chunk`, `/block` | Chunks named by SHA-256; transfer only missing chunks; integrity check for free |
-| Anti-entropy | `syncer` loop | Periodic pull from a random peer repairs anything that push missed |
+| Anti-entropy | `node.antiEntropy`, `syncer.SyncMerkle` | Periodic pull from a random peer repairs anything that push missed |
+| Push on change | `node.push`, `node.handlePush`, `scan.Scanner.OnChange` | Local edits are sent to alive members right away; never forwarded |
 | Merkle tree | `internal/merkle`, `syncer.SyncMerkle` | Compare whole indexes with one hash, then descend only into differing buckets |
 | Epidemic / gossip dissemination | `membership` gossip, SWIM piggyback | Random peer selection spreads information in O(log n) rounds |
 | Failure detection | `internal/membership` (heartbeats), `internal/node` (sync only with alive peers) | Heartbeat timeouts first, then SWIM; failures can only be suspected, never known for sure |
@@ -113,6 +114,18 @@ that all folders and indexes are identical. Any failing seed can be replayed exa
 **What happens on a partition?**
 Both sides keep working. Edits to the same file on both sides become concurrent; after healing, the
 deterministic keep-both rule runs on every node and they agree.
+
+**Why have both push and anti-entropy?**
+Push is fast (under a second) but unreliable: the receiver may be down, cut off, or the request
+may be dropped. Anti-entropy is slow (one round every few seconds) but it repairs everything
+eventually. Correctness only depends on anti-entropy; push only lowers latency. A test drops the
+push on purpose and checks that anti-entropy still delivers the file.
+
+**Why does a node not forward pushes it receives?**
+Forwarding without extra bookkeeping (like a "seen" set or a hop count) creates a storm: every
+node re-sends to every other node, forever. A mutation test produced about 850 pushes per node in
+under a second for one file. Each change is pushed only by the node where it happened; anyone it
+missed catches up through anti-entropy.
 
 **Why HTTP/JSON?**
 Standard library only, easy to inspect with `curl`, and the payloads are small except chunks,

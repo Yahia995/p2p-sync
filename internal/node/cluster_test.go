@@ -28,8 +28,9 @@ type slot struct {
 }
 
 type cluster struct {
-	t     *testing.T
-	slots []*slot
+	t         *testing.T
+	slots     []*slot
+	configure func(*Config)
 }
 
 func fastConfig(s *slot, listen string, peers []string) Config {
@@ -52,7 +53,12 @@ func fastConfig(s *slot, listen string, peers []string) Config {
 
 func newCluster(t *testing.T, size int) *cluster {
 	t.Helper()
-	c := &cluster{t: t}
+	return newClusterWith(t, size, func(*Config) {})
+}
+
+func newClusterWith(t *testing.T, size int, configure func(*Config)) *cluster {
+	t.Helper()
+	c := &cluster{t: t, configure: configure}
 	for i := 0; i < size; i++ {
 		c.slots = append(c.slots, &slot{dir: t.TempDir(), faults: transport.NewFaults()})
 	}
@@ -62,7 +68,9 @@ func newCluster(t *testing.T, size int) *cluster {
 		}
 	})
 	for _, s := range c.slots {
-		n, err := Start(fastConfig(s, "127.0.0.1:0", nil))
+		cfg := fastConfig(s, "127.0.0.1:0", nil)
+		configure(&cfg)
+		n, err := Start(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +112,9 @@ func (c *cluster) start(i int) {
 	if s.node != nil {
 		return
 	}
-	n, err := Start(fastConfig(s, s.addr, c.peersOf(i)))
+	cfg := fastConfig(s, s.addr, c.peersOf(i))
+	c.configure(&cfg)
+	n, err := Start(cfg)
 	if err != nil {
 		c.t.Fatal(err)
 	}

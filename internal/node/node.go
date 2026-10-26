@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"math/rand/v2"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"p2psync/internal/membership"
@@ -58,18 +60,25 @@ type Node struct {
 	Members *membership.List
 	Faults  *transport.Faults
 
-	log    *log.Logger
-	server *http.Server
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	log            *log.Logger
+	server         *http.Server
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	pushesReceived atomic.Int64
+}
+
+type pushMessage struct {
+	From    string         `json:"from"`
+	Records []store.Record `json:"records"`
 }
 
 type status struct {
-	ID      string                    `json:"id"`
-	Addr    string                    `json:"addr"`
-	Files   int                       `json:"files"`
-	Members []membership.Member       `json:"members"`
-	Faults  map[string]transport.Rule `json:"faults"`
+	ID             string                    `json:"id"`
+	Addr           string                    `json:"addr"`
+	Files          int                       `json:"files"`
+	Members        []membership.Member       `json:"members"`
+	Faults         map[string]transport.Rule `json:"faults"`
+	PushesReceived int64                     `json:"pushes_received"`
 }
 
 func Start(cfg Config) (*Node, error) {
@@ -103,7 +112,7 @@ func Start(cfg Config) (*Node, error) {
 	}
 
 	lock := &sync.Mutex{}
-	n.Scanner = &scan.Scanner{Root: cfg.Dir, Store: st, Self: id, Lock: lock, StableDelay: cfg.StableDelay}
+	n.Scanner = &scan.Scanner{Root: cfg.Dir, Store: st, Self: id, Lock: lock, StableDelay: cfg.StableDelay, OnChange: n.push}
 	n.Syncer = &syncer.Syncer{Self: id, Root: cfg.Dir, Store: st, Lock: lock, Client: transport.NewClient(n.Addr, cfg.RequestTimeout, n.Faults)}
 	if err := n.Syncer.ResetTmp(); err != nil {
 		listener.Close()
@@ -115,6 +124,7 @@ func Start(cfg Config) (*Node, error) {
 
 	mux := transport.NewHandler(st, cfg.Dir)
 	mux.HandleFunc("POST /heartbeat", n.Members.HandleHeartbeat)
+	mux.HandleFunc("POST /push", n.handlePush)
 	mux.HandleFunc("POST /admin/faults", n.Faults.HandleAdmin)
 	mux.HandleFunc("GET /status", n.handleStatus)
 	n.server = &http.Server{Handler: n.Faults.Wrap(mux)}
@@ -159,6 +169,40 @@ func (n *Node) antiEntropy(ctx context.Context, every time.Duration) {
 	}
 }
 
+func (n *Node) push(paths []string) {
+	msg := pushMessage{From: n.Addr}
+	for _, p := range paths {
+		rec, found, err := n.Store.Get(p)
+		if err != nil {
+			n.log.Println("push:", err)
+			return
+		}
+		if found {
+			msg.Records = append(msg.Records, rec)
+		}
+	}
+	for _, addr := range n.Members.Alive() {
+		go func() {
+			if err := n.Syncer.Client.PostJSON(addr, "/push", msg); err != nil {
+				n.log.Println("push:", err)
+			}
+		}()
+	}
+}
+
+func (n *Node) handlePush(w http.ResponseWriter, r *http.Request) {
+	var msg pushMessage
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil || msg.From == "" {
+		http.Error(w, "bad push", http.StatusBadRequest)
+		return
+	}
+	n.pushesReceived.Add(1)
+	if err := n.Syncer.ApplyRecords(msg.From, msg.Records); err != nil {
+		n.log.Println("push from", msg.From+":", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 	records, err := n.Store.All()
 	if err != nil {
@@ -166,17 +210,22 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	transport.WriteJSON(w, status{
-		ID:      n.ID,
-		Addr:    n.Addr,
-		Files:   len(records),
-		Members: n.Members.Members(),
-		Faults:  n.Faults.Rules(),
+		ID:             n.ID,
+		Addr:           n.Addr,
+		Files:          len(records),
+		Members:        n.Members.Members(),
+		Faults:         n.Faults.Rules(),
+		PushesReceived: n.pushesReceived.Load(),
 	})
 }
 
 func (n *Node) Stop() {
 	n.cancel()
-	n.server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := n.server.Shutdown(ctx); err != nil {
+		n.server.Close()
+	}
 	n.wg.Wait()
 	n.Store.Close()
 }
