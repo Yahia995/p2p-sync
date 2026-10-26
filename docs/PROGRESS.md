@@ -41,9 +41,10 @@
 - [x] Mutation check: tests fail if the winner rule, copy-first order, or no-increment rule is broken
 
 ## Phase 6 — Watcher + echo suppression
-- [ ] Recursive fsnotify watcher with debounce
-- [ ] 60 s periodic rescan
-- [ ] No version bump on received files (test)
+- [x] Recursive fsnotify watcher with debounce (200 ms, then full rescan)
+- [x] 60 s periodic rescan in the same goroutine
+- [x] No version bump on received files or deletes (test + mutation check)
+- [x] Manual check: new nested folder on node A reaches node B in about 4 s
 
 ## Phase 7 — Failure detection + convergence
 - [ ] /status endpoint

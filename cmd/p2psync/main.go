@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,7 +21,8 @@ import (
 )
 
 const (
-	rescanPeriod      = 10 * time.Second
+	watchDebounce     = 200 * time.Millisecond
+	rescanPeriod      = 60 * time.Second
 	antiEntropyPeriod = 5 * time.Second
 	requestTimeout    = 10 * time.Second
 )
@@ -87,10 +89,11 @@ func run(cfg config) error {
 		return err
 	}
 
-	go every(rescanPeriod, func() error {
-		_, err := scanner.Rescan()
-		return err
-	})
+	go func() {
+		if err := scanner.Watch(context.Background(), watchDebounce, rescanPeriod); err != nil {
+			log.Fatal(err)
+		}
+	}()
 	go every(antiEntropyPeriod, func() error {
 		if len(cfg.peers) == 0 {
 			return nil

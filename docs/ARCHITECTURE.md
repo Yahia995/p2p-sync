@@ -223,10 +223,19 @@ not hashed. The implementation waits once per rescan, not once per file: it coll
 files, sleeps 500 ms, then re-checks each one. A file that is still changing is skipped and picked up
 by the next rescan. It is also not tombstoned, because it was seen on disk.
 
-Watcher: fsnotify does not watch subfolders on its own. The watcher adds a watch on every directory at start
-and on every newly created directory. Each event schedules a debounced rescan of the affected path
-(rescan of a single path uses the same logic as above). A full rescan still runs every 60 s
-to catch missed events and changes made while the node was down.
+Watcher (`scan.Watch`): fsnotify does not watch subfolders on its own. The watcher adds a watch on
+every directory at start (except `.p2psync/`) and on every newly created directory. Every event
+resets a 200 ms debounce timer; when it fires, a full rescan runs. A ticker forces a full rescan
+every 60 s to catch missed events (for example an inotify queue overflow). The initial rescan at
+start catches changes made while the node was down. All rescans run in this one goroutine, so two
+rescans never overlap.
+
+A full rescan instead of a per-path rescan is a deliberate simplification: unchanged files cost one
+`stat` and no hashing, and it automatically picks up files created inside a new directory before
+the watch on that directory was registered (a classic inotify race).
+
+inotify limit: one watch per directory. Fedora's default `fs.inotify.max_user_watches` is far above
+what the demo needs (188019 on the main PC).
 
 Race with the sync engine: hashing happens outside the node lock. Before saving a new version,
 the scanner takes the lock and re-checks that the file still has the size and mtime it hashed. If
@@ -240,6 +249,11 @@ with the new hash and the post-rename mtime while holding the lock. When the wat
 write arrives, the scanner sees `size` and `mtime` equal to the record (or the same hash after
 rehashing), so it does not bump the version and does not push. No timers or "ignore lists" are
 involved; the rule is purely "content equal to the stored record means no new version".
+
+There are two layers. The size+mtime match is only a shortcut that avoids rehashing; the real
+protection is the hash comparison. A mutation test confirmed this: storing a wrong mtime after
+install alone does not break echo suppression, but combined with removing the hash rule the
+receiver bumps the version and `TestReceivedFileIsNotReannounced` fails.
 
 ## 7. Sync algorithm
 
@@ -511,7 +525,7 @@ sent about `3 * log(n)` times. Message cost per node per period is constant, ind
 | Module | Why |
 |---|---|
 | `modernc.org/sqlite` v1.59.0 | SQLite driver in pure Go. No cgo, so `CGO_ENABLED=0` static builds run on the old PC regardless of its distro. Pinned to v1.59.0 because v1.60+ requires Go 1.26 |
-| `github.com/fsnotify/fsnotify` | Go wrapper around inotify. Writing raw inotify syscalls by hand adds nothing to the distributed-systems part |
+| `github.com/fsnotify/fsnotify` v1.10.1 | Go wrapper around inotify. Writing raw inotify syscalls by hand adds nothing to the distributed-systems part |
 
 Everything else uses the standard library (`net/http`, `encoding/json`, `crypto/sha256`,
 `database/sql`, `math/rand/v2`, `html/template`).

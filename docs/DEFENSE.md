@@ -72,7 +72,12 @@ anti-entropy catches up. Failure detection here affects efficiency, not correctn
 
 **How do you avoid the node re-announcing a file it just received?**
 After writing it, the stored record already has that content and mtime. The scanner only creates a
-version when the disk differs from the stored record.
+version when the disk differs from the stored record. The mtime check is just a shortcut; the hash
+check is what really guarantees it. No "ignore this path for 2 seconds" timers.
+
+**Why does every watcher event trigger a full rescan instead of handling just that file?**
+It is simpler and avoids the inotify race where files are created inside a new directory before
+the watch on that directory exists. A rescan of unchanged files only costs a `stat` each.
 
 **Why fixed-size chunks? What is their weakness?**
 Simple and enough to show content addressing. Weakness: inserting a byte near the start shifts all
